@@ -9,10 +9,20 @@
 render_to_png / `python preview.py "model.pmx" -o out.png`（独立于实时预览）。
 
 不依赖 numpy / PIL / OpenGL，只用到 tkinter + zlib + struct。
+装了 Pillow 时会更顺：贴图解码走 C 实现，低分辨率渲染结果也交给 Pillow
+放大到画布尺寸（Y 方向双线性），渲染后端会显示在预览工具栏右下角。
+
+预览的流畅度来自三层配合（纯 Python 软光栅很难单靠优化循环赢）：
+    1) 交互（拖动 / 滚轮 / 自转）时用 build_lod() 抽稀出的轻量网格，
+       面数与顶点数都降下来，一帧 ~40ms；
+    2) 每个时间片只处理 SLICE 个三角面，界面不会被一帧渲染长时间占住；
+    3) 像素预算按实测耗时自适应，机器快就出高清，机器慢就自动降分辨率。
 
 主要接口：
     load_preview(path, kind=None, log=None)  -> Mesh
     Preview3D(master, size=360, ...)         # tkinter 实时预览控件（背视图）
+    Rasterizer(mesh, size, ...).step(n)      # 可分片推进的软光栅器
+    render(mesh, size, ...)                  # 一次画完，返回 (W, H, buf)
     render_to_png(mesh, path, size=560, ...) # 仅命令行离屏渲染用，GUI 预览不调用
 
 命令行（独立导出，不影响实时预览）：
@@ -23,6 +33,7 @@ import math
 import os
 import struct
 import sys
+import time
 import zlib
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -43,6 +54,36 @@ try:
     from PIL import Image as _PIL_Image
 except Exception:                                    # pragma: no cover
     _PIL_Image = None
+
+def pil_info():
+    """返回 (是否可用, 版本串)；供界面显示渲染后端。"""
+    if _PIL_Image is None:
+        return (False, "")
+    try:
+        return (True, getattr(_PIL_Image, "__version__", "") or "")
+    except Exception:
+        return (True, "")
+
+
+# ImageTk 只在真正画时才 import（tkinter 未就绪时 import 会失败）
+_PIL_ImageTk = None
+_PIL_ITK_TRIED = False
+
+
+def get_imagetk():
+    global _PIL_ImageTk, _PIL_ITK_TRIED
+    if _PIL_ITK_TRIED:
+        return _PIL_ImageTk
+    _PIL_ITK_TRIED = True
+    if _PIL_Image is None or tk is None:
+        return None
+    try:
+        from PIL import ImageTk
+        _PIL_ImageTk = ImageTk
+    except Exception:
+        _PIL_ImageTk = None
+    return _PIL_ImageTk
+
 
 # 预览贴图分辨率上限：预览框很小，2048/4096 的贴图没必要全分辨率解码，
 # 既省内存又避免渲染时逐像素采样大图。
@@ -376,6 +417,7 @@ class Mesh:
         self.materials = []      # 原始材质信息
         self._bbox = None
         self._tex_state = None  # 渐进式贴图：延迟解码用的素材，解码后置 None
+        self.rev = 0            # 每次重算逐面颜色就 +1，预览控件据此判断是否需要重绘
 
     # -- 渐进式贴图：先以基色出背视图，后台再解码贴图并重绘
     def load_textures(self):
@@ -425,6 +467,7 @@ class Mesh:
                 mc["tex"] = _mat_image(gltf, bin_data, tex.get("source"), img_cache)
             _resolve_face_colors(self, face_mat, mat_cache)
         self._tex_state = None
+        self.rev += 1
         return True
 
     # -- 统计
@@ -454,6 +497,58 @@ class Mesh:
         if len(self.face_rgb) == n:
             return
         self.face_rgb = [(210, 205, 200)] * n
+
+    def build_lod(self, target=15000):
+        """抽稀出一个只用于“拖动时”的轻量网格；面数本来就不多则返回 None。
+
+        随机抽样（固定种子）而不是按索引等距丢面，这样抽到的面在整个模型上
+        分布均匀，不会出现一圈一圈的空洞。同时重排顶点表：只保留被抽到的面
+        用到的顶点，于是每帧连投影的顶点数也跟着降下来（投影是大头之一）。
+        """
+        n = len(self.tris)
+        if n <= target or target <= 0:
+            return None
+        import random
+        rng = random.Random(20240913)
+        order = sorted(rng.sample(range(n), target))
+        vmap = {}
+        verts = []
+        uv = []
+        tris = []
+        frgb = []
+        ftex = []
+        fcol = []
+        for ti in order:
+            nt = []
+            for vi in self.tris[ti]:
+                j = vmap.get(vi)
+                if j is None:
+                    j = len(verts)
+                    vmap[vi] = j
+                    verts.append(self.verts[vi])
+                    uv.append(self.uv[vi] if vi < len(self.uv) else (0.0, 0.0))
+                nt.append(j)
+            tris.append((nt[0], nt[1], nt[2]))
+            frgb.append(self.face_rgb[ti] if ti < len(self.face_rgb)
+                        else (210, 205, 200))
+            ftex.append(self.face_tex[ti] if ti < len(self.face_tex) else None)
+            fcol.append(self.face_col[ti] if ti < len(self.face_col)
+                        else (210, 205, 200))
+        out = Mesh(self.name)
+        out.verts = verts
+        out.uv = uv
+        out.tris = tris
+        out.face_rgb = frgb
+        out.face_tex = ftex
+        out.face_col = fcol
+        out.bones = self.bones
+        out.materials = self.materials
+        out.rev = self.rev
+        try:
+            out._bbox = self.bbox()      # 视角/缩放不受抽稀影响
+        except Exception:
+            pass
+        return out
 
 
 def _resolve_face_colors(mesh, face_mat, mats):
@@ -921,6 +1016,21 @@ def _shade(nx, ny, nz):
 
 
 # ------------------------------------------------------------------- 控件 ----
+# 预览控件自带的文案；界面其它部分有自己的 i18n，这里由调用方通过 labels= 覆盖。
+PV_LABELS = {
+    "front": "正视", "left": "左视", "back": "背视", "top": "俯视",
+    "reset": "复位", "spin": "自转", "bone": "骨骼", "wire": "线框",
+    "placeholder": "拖入模型后这里实时显示背视图预览\n（按住拖动可旋转，滚轮缩放）",
+}
+
+
+def pv_labels(**kw):
+    """拿一份预览文案（已按 kw 覆盖）交给 Preview3D。"""
+    out = dict(PV_LABELS)
+    out.update({k: v for k, v in kw.items() if v})
+    return out
+
+
 if tk is not None:
     class Preview3D(tk.Frame):
         """背视图实时预览控件：默认显示背视图，可拖动旋转、滚轮缩放、右键平移、双击复位。"""
@@ -933,11 +1043,25 @@ if tk is not None:
         ACCENT = "#2f6fed"
         ACCENT_SOFT = "#e8f0ff"
 
-        FAST_MAX = 15000        # 拖动旋转时最多绘制的三角面数
+        FAST_MAX = 15000        # 线框模式下最多画出的三角面数
 
-        def __init__(self, master, size=360, uiscale=1.0, **kw):
+        # 交互与精修的节奏：拖动时按 ~12ms 一帧出低清图，停手 150ms 后出精修图
+        FAST_DELAY = 12
+        FULL_DELAY = 150
+        FAST_PX = 26000         # 交互时的像素预算（≈160×170）
+        MIN_PX = 11000
+        START_PX = 110000       # 精修起始像素预算，之后按实测耗时自适应
+        MAX_PX = 420000         # 精修像素上限，再高只是白白烧 CPU
+        LOD_TRIS = 12000        # 交互用的轻量网格目标面数（≈ 25fps）
+        SLICE = 1500            # 精修渲染每片推进的三角面数
+        SLICE_MS = 0.024        # 精修渲染每个时间片最长占用（秒）
+
+        def __init__(self, master, size=360, uiscale=1.0, labels=None, **kw):
             super().__init__(master, bg=self.CARD, **kw)
             self._px = lambda v: int(round(v * uiscale))
+            self.labels = dict(PV_LABELS)
+            if labels:
+                self.labels.update(labels)
             self.size = size
             self.mesh = None
             self.yaw = 0.0
@@ -953,6 +1077,18 @@ if tk is not None:
             self._last = (0, 0)
             self._spin_job = None
             self._full_job = None
+            self._fast_job = None
+            self._shown = None          # 上次绘制的画面参数指纹，用于跳过重复绘制
+            self._img_id = None
+            self._budget = self.START_PX
+            self._ms = 0.0
+            self._lod = None            # 交互用的轻量网格（第一次拖动时才生成）
+            self._lod_built = False
+            self._r = None              # 正在进行的精修渲染
+            self._rjob = None
+            self._r_t0 = 0.0
+            self._r_last = 0.0
+            self._cur = (0, 0, 1)
 
             self._toolbar = tk.Frame(self, bg=self.CARD)
             self._toolbar.pack(side="bottom", fill="x")
@@ -988,17 +1124,28 @@ if tk is not None:
 
         def _build_toolbar(self):
             tb = self._toolbar
-            self._small(tb, "正视", lambda: self.set_view(0, 0)).pack(side="left")
-            self._small(tb, "左视", lambda: self.set_view(90, 0)).pack(side="left")
-            self._small(tb, "背视", lambda: self.set_view(180, 0)).pack(side="left")
-            self._small(tb, "俯视", lambda: self.set_view(0, 78)).pack(side="left")
-            self._small(tb, "复位", self.reset_view).pack(side="left")
-            self.btn_spin = self._small(tb, "自转", self.toggle_spin)
+            L = self.labels
+            self._small(tb, L["front"], lambda: self.set_view(0, 0)).pack(side="left")
+            self._small(tb, L["left"], lambda: self.set_view(90, 0)).pack(side="left")
+            self._small(tb, L["back"], lambda: self.set_view(180, 0)).pack(side="left")
+            self._small(tb, L["top"], lambda: self.set_view(0, 78)).pack(side="left")
+            self._small(tb, L["reset"], self.reset_view).pack(side="left")
+            self.btn_spin = self._small(tb, L["spin"], self.toggle_spin)
             self.btn_spin.pack(side="left")
-            self.btn_bone = self._small(tb, "骨骼", self.toggle_bones)
+            self.btn_bone = self._small(tb, L["bone"], self.toggle_bones)
             self.btn_bone.pack(side="left")
-            self.btn_wire = self._small(tb, "线框", self.toggle_wire)
+            self.btn_wire = self._small(tb, L["wire"], self.toggle_wire)
             self.btn_wire.pack(side="left")
+            # 右下角：渲染后端 + 上一帧耗时，便于判断“卡”在哪个环节
+            ok, _ver = pil_info()
+            self._backend = "Pillow ✓" if ok else "纯 Python"
+            self.lbl_perf = tk.Label(tb, text=self._backend, bg=self.CARD,
+                                     fg=self.MUTED, anchor="e",
+                                     font=("Consolas", 8))
+            self.lbl_perf.pack(side="right", padx=(0, self._px(6)))
+
+        def _perf_text(self):
+            return "%s · %d ms" % (self._backend, int(self._ms + 0.5))
 
         def _paint_btn(self, b, on):
             b.configure(bg=self.ACCENT if on else self.CARD,
@@ -1013,8 +1160,7 @@ if tk is not None:
                 w = self._px(self.size)
             if h <= 1:
                 h = self._px(self.size)
-            c.create_text(w / 2, h / 2, text="拖入模型后这里实时显示背视图预览\n"
-                                             "（按住拖动可旋转，滚轮缩放）",
+            c.create_text(w / 2, h / 2, text=self.labels["placeholder"],
                           fill=self.MUTED, font=("Microsoft YaHei UI", 9),
                           justify="center")
 
@@ -1022,10 +1168,19 @@ if tk is not None:
         def set_mesh(self, mesh):
             self.mesh = mesh
             self._fast = None
+            self._shown = None
+            self._lod = None
+            self._lod_built = False
+            self._cancel_render()
             if mesh is not None and len(mesh.tris) > self.FAST_MAX:
                 stride = max(1, len(mesh.tris) // self.FAST_MAX)
                 self._fast = list(range(0, len(mesh.tris), stride))
             self.reset_view()
+            # 立刻出一帧低清图（拖入 / 换向的手感就在这里），精修图随后跟上
+            try:
+                self._draw(fast=True)
+            except Exception:
+                pass
 
         def set_bones(self, on):
             self.show_bones = bool(on)
@@ -1107,40 +1262,192 @@ if tk is not None:
             self.zoom = max(0.15, min(12.0, self.zoom * f))
             self.redraw(fast=True)
 
-        # -- 绘制
+        # -- 绘制：交互时低分辨率快速出图，停手后再出精修图
         def redraw(self, fast=False):
-            if fast and self._dragging:
-                self._draw(fast=True)
+            """合并短时间内的多次请求。
+
+            每一帧的 Python 软光栅是有成本的：拖动时事件可能每 5ms 来一次，
+            如果每次都重新定时，定时器会被反复取消、一帧都画不出来。所以这里用
+            “同一时刻最多一个待执行帧”的办法，稳定按 FAST_DELAY 出低清图。
+            """
+            if fast:
+                if self._fast_job is None:
+                    self._fast_job = self.after(self.FAST_DELAY, self._frame_fast)
                 return
             self._schedule_full()
 
-        def _schedule_full(self):
+        def _frame_fast(self):
+            self._fast_job = None
+            self._draw(fast=True)
+            self._schedule_full()
+
+        def _schedule_full(self, delay=None):
             if self._full_job:
                 try:
                     self.after_cancel(self._full_job)
                 except Exception:
                     pass
-            self._full_job = self.after(40, self._draw)
+            self._full_job = self.after(self.FULL_DELAY if delay is None else delay,
+                                        self._frame_full)
 
-        def _draw(self, dragging=False, fast=False):
+        def _frame_full(self):
             self._full_job = None
-            c = self.canvas
-            c.delete("all")
-            m = self.mesh
-            if m is None or not m.verts or not m.tris:
-                self._placeholder()
-                return
-            W = c.winfo_width()
-            H = c.winfo_height()
+            self._draw(fast=False)
+
+        def _canvas_size(self):
+            W = self.canvas.winfo_width()
+            H = self.canvas.winfo_height()
             if W <= 1:
                 W = self._px(self.size)
             if H <= 1:
                 H = self._px(self.size)
-            # 交互中 / 自转中 / 线框：用画布多边形（够快），停下后再出精细贴图
-            if (fast or dragging or self.wireframe) or (W * H > 900000):
+            return W, H
+
+        def _plan(self, W, H, fast):
+            """按像素预算决定渲染分辨率；返回 (rw, rh, 放大倍数)。"""
+            budget = self.FAST_PX if fast else min(self._budget, self.MAX_PX, W * H)
+            pix = W * H
+            step = 1
+            if pix > budget and budget > 0:
+                step = int(math.ceil(math.sqrt(pix / float(budget))))
+                step = max(1, min(8, step))
+            rw = max(8, int(math.ceil(W / float(step))))
+            rh = max(8, int(math.ceil(H / float(step))))
+            return rw, rh, step
+
+        def _cancel_render(self):
+            """丢掉正在进行的精修渲染（用户又开始操作了）。"""
+            self._r = None
+            if self._rjob:
+                try:
+                    self.after_cancel(self._rjob)
+                except Exception:
+                    pass
+                self._rjob = None
+
+        def _lod_mesh(self):
+            """交互用的轻量网格；第一次需要时才抽稀（一次性成本，几十毫秒）。"""
+            if self._lod_built:
+                return self._lod
+            self._lod_built = True
+            try:
+                self._lod = (self.mesh.build_lod(self.LOD_TRIS)
+                             if self.mesh is not None else None)
+            except Exception:
+                self._lod = None
+            return self._lod
+
+        def _adapt(self, dt, W, H):
+            """实测每帧耗时，自动在“分辨率”与“帧率”之间找平衡。
+
+            降得比升得快：慢的时候一步砍掉大半（免得要好几轮才收敛），
+            快的时候慢慢加回去。
+            """
+            if dt > 0.25:
+                self._budget = max(self.MIN_PX, int(self._budget * 0.35))
+            elif dt > 0.10:
+                self._budget = max(self.MIN_PX, int(self._budget * 0.6))
+            elif dt < 0.035:
+                self._budget = min(self.MAX_PX, W * H,
+                                   int(self._budget * 1.4) + 2000)
+
+        def _draw(self, dragging=False, fast=False):
+            m = self.mesh
+            if m is None or not m.verts or not m.tris:
+                self._cancel_render()
+                self._placeholder()
+                return
+            W, H = self._canvas_size()
+            mesh = (self._lod_mesh() or m) if fast else m
+            rw, rh, step = self._plan(W, H, fast)
+            # 画面指纹：视角 / 画布 / 渲染参数全一样时直接跳过，避免 Configure
+            # 事件、重复排程把同一帧刷了一遍又一遍。
+            key = (id(mesh), getattr(mesh, "rev", 0), id(m),
+                   round(self.yaw, 5), round(self.pitch, 5), round(self.zoom, 5),
+                   round(self.panx, 2), round(self.pany, 2),
+                   rw, rh, self.show_bones, self.wireframe)
+            if self.wireframe:
+                if key == self._shown:
+                    return
+                self._shown = key
+                self._cancel_render()
                 self._draw_poly(W, H)
+                return
+            if self._r is not None and key == self._shown:
+                return                      # 精修渲染还在跑，别打断
+            self._shown = key
+            self._cancel_render()
+            self._cur = (W, H, step)
+            if fast:
+                out = render(mesh, (rw, rh), yaw=self.yaw, pitch=self.pitch,
+                             zoom=self.zoom, show_bones=self.show_bones,
+                             bg=(251, 252, 254), pan=(self.panx, self.pany))
+                if out is None:
+                    self._placeholder()
+                    return
+                self._blit(out[0], out[1], out[2], step, W, H)
+                self._schedule_full()
+                return
+            # 精修：分片推进，每帧只占 SLICE_MS，界面不会跟着卡
+            try:
+                self._r = Rasterizer(mesh, (rw, rh), yaw=self.yaw,
+                                     pitch=self.pitch, zoom=self.zoom,
+                                     show_bones=self.show_bones,
+                                     bg=(251, 252, 254),
+                                     pan=(self.panx, self.pany))
+            except Exception:
+                self._placeholder()
+                return
+            self._r_t0 = time.perf_counter()
+            self._r_last = 0.0
+            self._tick_full()
+
+        def _tick_full(self):
+            """一次 after 回调里推进几片；画完或超时就把中间结果贴上去。"""
+            self._rjob = None
+            r = self._r
+            if r is None:
+                return
+            W, H, step = self._cur
+            t0 = time.perf_counter()
+            while True:
+                done = r.step(self.SLICE)
+                if done:
+                    self._r = None
+                    total = time.perf_counter() - self._r_t0
+                    self._blit(r.W, r.H, r.buf, step, W, H)
+                    self._adapt(total, W, H)
+                    self._ms = total * 1000.0
+                    try:
+                        self.lbl_perf.configure(text=self._perf_text())
+                    except Exception:
+                        pass
+                    return
+                if time.perf_counter() - t0 > self.SLICE_MS:
+                    break
+            now = time.perf_counter()
+            if now - self._r_last > 0.09:      # 别每片都刷，建图也是有成本的
+                self._r_last = now
+                self._blit(r.W, r.H, r.buf, step, W, H)
+            self._rjob = self.after(1, self._tick_full)
+
+        def _blit(self, rw, rh, buf, step, W, H):
+            """把渲染结果（可能是低分辨率的）放大到画布尺寸后贴上去。"""
+            itk = get_imagetk()
+            if itk is not None:
+                # Pillow 负责把低清图放大到画布尺寸（C 实现，几乎不耗时）
+                im = _PIL_Image.frombytes("RGB", (rw, rh), bytes(buf))
+                if (rw, rh) != (W, H):
+                    im = im.resize((W, H), _PIL_Image.BILINEAR)
+                photo = itk.PhotoImage(im)
             else:
-                self._draw_image(W, H)
+                photo = tk.PhotoImage(data=buf_to_ppm(buf, rw, rh))
+                if step > 1:
+                    photo = photo.zoom(step)
+            self._photo = photo                  # 必须留引用，否则图片会被回收
+            c = self.canvas
+            c.delete("all")
+            self._img_id = c.create_image(0, 0, anchor="nw", image=photo)
 
         def _view_common(self, W, H):
             ctr, span = self.mesh.bbox()
@@ -1148,28 +1455,18 @@ if tk is not None:
             fit = min(W, H) * 0.46 / span * self.zoom
             return ctr, rot, fit, W / 2 + self.panx, H / 2 + self.pany
 
-        def _draw_image(self, W, H):
-            """逐像素采样贴图，最接近原图的当前视角（默认背视图）。"""
-            rows = render(self.mesh, (W, H), yaw=self.yaw, pitch=self.pitch,
-                          zoom=self.zoom, show_bones=self.show_bones,
-                          bg=(251, 252, 254), pan=(self.panx, self.pany),
-                          max_tris=120000)
-            if rows is None:
-                self._placeholder()
-                return
-            self._photo = tk.PhotoImage(data=rows_to_ppm(rows))
-            self.canvas.create_image(0, 0, anchor="nw", image=self._photo)
-
         def _draw_poly(self, W, H):
+            """线框模式：直接画画布图元（线比逐像素取样清楚得多）。"""
             c = self.canvas
             m = self.mesh
+            c.delete("all")
             ctr, rot, fit, cx, cy = self._view_common(W, H)
             proj = []
             ap = proj.append
             for p in m.verts:
                 v = _view_point(p, ctr, rot)
                 ap((cx + v[0] * fit, cy - v[1] * fit, v[0], v[1], v[2]))
-            tris = self._fast if (self._fast is not None and self._dragging) else None
+            tris = self._fast if self._fast is not None else None
             rng = range(len(m.tris)) if tris is None else tris
             items = []
             ap = items.append
@@ -1225,129 +1522,318 @@ def render_to_png(mesh, path, size=560, yaw=0.0, pitch=0.0, zoom=1.0,
                  show_bones=show_bones, bg=bg)
     if img is None:
         return None
-    pmx_check.write_png(path, size, size, img)
+    w, h, buf = img
+    _write_png_flat(path, w, h, buf)
     return path
 
 
-def render(mesh, size=560, yaw=0.0, pitch=0.0, zoom=1.0, show_bones=False,
-           bg=(247, 249, 252), pan=(0.0, 0.0), max_tris=None):
-    """正交投影 + z-buffer 软件光栅化，逐像素采样贴图。
+def _write_png_flat(path, w, h, buf):
+    """把扁平 RGB 缓冲写成 PNG（不依赖 Pillow）。"""
+    stride = w * 3
+    raw = bytearray()
+    for y in range(h):
+        o = y * stride
+        raw.append(0)
+        raw += buf[o:o + stride]
 
-    size 可以是整数（正方形）或 (W, H)。返回 W×H 的 [[r,g,b]] 行。
+    def chunk(typ, data):
+        return (struct.pack(">I", len(data)) + typ + data +
+                struct.pack(">I", zlib.crc32(typ + data) & 0xFFFFFFFF))
+
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+        f.write(chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)))
+        f.write(chunk(b"IDAT", zlib.compress(bytes(raw), 6)))
+        f.write(chunk(b"IEND", b""))
+
+
+def buf_to_ppm(buf, w, h):
+    """扁平 RGB 缓冲 → PPM(P6) 字节，供 tk.PhotoImage 直接使用。"""
+    return ("P6\n%d %d\n255\n" % (w, h)).encode("ascii") + bytes(buf)
+
+
+class Rasterizer(object):
+    """可分片推进的软件光栅器。
+
+    主线程每次只给它几十毫秒（step(n) 处理 n 个三角面），大模型的精修图会
+    “逐块变清晰”，而不是一帧卡住几百毫秒让整个界面失去响应。
+    返回的 buf 是长度 W*H*3 的扁平 RGB bytearray。
     """
-    if not mesh.verts or not mesh.tris:
-        return None
-    if isinstance(size, (tuple, list)):
-        W, H = int(size[0]), int(size[1])
-    else:
-        W = H = int(size)
-    if W <= 0 or H <= 0:
-        return None
 
-    ctr, span = mesh.bbox()
-    rot = _rot_matrix(yaw, pitch)
-    fit = min(W, H) * 0.46 / span * zoom
-    ox = W / 2.0 + pan[0]
-    oy = H / 2.0 + pan[1]
-
-    proj = []
-    for p in mesh.verts:
-        v = _view_point(p, ctr, rot)
-        proj.append((ox + v[0] * fit, oy - v[1] * fit, v[2]))
-
-    img = [[list(bg) for _ in range(W)] for _ in range(H)]
-    zbuf = [[-1e30] * W for _ in range(H)]
-    frgb = mesh.face_rgb
-    ftex = getattr(mesh, "face_tex", None)
-    fcol = getattr(mesh, "face_col", None)
-    uv = mesh.uv
-
-    ntri = len(mesh.tris)
-    tri_range = range(ntri)
-    if max_tris and ntri > max_tris:
-        stride = (ntri + max_tris - 1) // max_tris
-        tri_range = range(0, ntri, stride)
-
-    for i in tri_range:
-        a, b, d = mesh.tris[i]
-        pa, pb, pd = proj[a], proj[b], proj[d]
-        x0 = max(0, int(min(pa[0], pb[0], pd[0])))
-        x1 = min(W - 1, int(max(pa[0], pb[0], pd[0])) + 1)
-        y0 = max(0, int(min(pa[1], pb[1], pd[1])))
-        y1 = min(H - 1, int(max(pa[1], pb[1], pd[1])) + 1)
-        if x1 < x0 or y1 < y0:
-            continue
-        den = (pb[1] - pd[1]) * (pa[0] - pd[0]) + (pd[0] - pb[0]) * (pa[1] - pd[1])
-        if abs(den) < 1e-9:
-            continue
-        inv = 1.0 / den
-        col = frgb[i] if i < len(frgb) else (200, 200, 200)
-        tex = ftex[i] if (ftex and i < len(ftex)) else None
-        base = fcol[i] if (fcol and i < len(fcol)) else col
-        if tex is not None and len(uv) > max(a, b, d):
-            ua, va = uv[a]
-            ub, vb = uv[b]
-            ud, vd = uv[d]
+    def __init__(self, mesh, size, yaw=0.0, pitch=0.0, zoom=1.0,
+                 show_bones=False, bg=(247, 249, 252), pan=(0.0, 0.0),
+                 max_tris=None):
+        if isinstance(size, (tuple, list)):
+            W, H = int(size[0]), int(size[1])
         else:
-            tex = None
-        # 面法线（视图空间）→ 光照
-        ux, uy, uz = pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]
-        vx, vy, vz = pd[0] - pa[0], pd[1] - pa[1], pd[2] - pa[2]
-        sh = _shade(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx)
-        cr0 = min(255, int(base[0] * sh))
-        cg0 = min(255, int(base[1] * sh))
-        cb0 = min(255, int(base[2] * sh))
-        for py in range(y0, y1 + 1):
-            cyy = py + 0.5
-            row = img[py]
-            zrow = zbuf[py]
-            for px in range(x0, x1 + 1):
-                cxx = px + 0.5
-                w0 = ((pb[1] - pd[1]) * (cxx - pd[0]) +
-                      (pd[0] - pb[0]) * (cyy - pd[1])) * inv
-                if w0 < 0:
-                    continue
-                w1 = ((pd[1] - pa[1]) * (cxx - pd[0]) +
-                      (pa[0] - pd[0]) * (cyy - pd[1])) * inv
-                if w1 < 0:
-                    continue
-                w2 = 1.0 - w0 - w1
-                if w2 < 0:
-                    continue
-                z = w0 * pa[2] + w1 * pb[2] + w2 * pd[2]
-                if z <= zrow[px]:
-                    continue
-                zrow[px] = z
-                if tex is not None:
-                    uu = w0 * ua + w1 * ub + w2 * ud
-                    vv = w0 * va + w1 * vb + w2 * vd
-                    tr, tg, tb, _t = tex.sample(uu, vv)
-                    row[px] = [cr0 * tr // 255, cg0 * tg // 255, cb0 * tb // 255]
-                else:
-                    row[px] = [cr0, cg0, cb0]
+            W = H = int(size)
+        if W <= 0 or H <= 0:
+            raise ValueError("bad size")
+        self.mesh = mesh
+        self.W = W
+        self.H = H
+        self.show_bones = show_bones
 
-    if show_bones:
-        for bp in mesh.bones:
+        ctr, span = mesh.bbox()
+        rot = _rot_matrix(yaw, pitch)
+        fit = min(W, H) * 0.46 / span * zoom
+        self.ctr = ctr
+        self.rot = rot
+        self.fit = fit
+        ox = W / 2.0 + pan[0]
+        oy = H / 2.0 + pan[1]
+        self.ox = ox
+        self.oy = oy
+
+        proj = []
+        ap = proj.append
+        # 这里刻意把 _view_point 的算式内联展开：模型动辄几万个顶点，
+        # 省掉一次函数调用 / 元组拆包，投影环节就能快上近一倍。
+        cy_, sy_, cp_, sp_ = rot
+        ccx, ccy, ccz = ctr
+        for p in mesh.verts:
+            x = p[0] - ccx
+            y = p[1] - ccy
+            z = p[2] - ccz
+            x1 = x * cy_ + z * sy_
+            z1 = -x * sy_ + z * cy_
+            ap((ox + x1 * fit, oy - (y * cp_ - z1 * sp_) * fit,
+                 y * sp_ + z1 * cp_))
+        self.proj = proj
+
+        self.buf = bytearray(bytes((int(bg[0]) & 255, int(bg[1]) & 255,
+                                    int(bg[2]) & 255)) * (W * H))
+        self.zbuf = [-1e30] * (W * H)
+        self.frgb = mesh.face_rgb
+        self.ftex = getattr(mesh, "face_tex", None)
+        self.fcol = getattr(mesh, "face_col", None)
+        self.uv = mesh.uv
+
+        ntri = len(mesh.tris)
+        if max_tris and ntri > max_tris:
+            stride = (ntri + max_tris - 1) // max_tris
+            self.order = list(range(0, ntri, stride))
+        else:
+            self.order = None
+        self.total = len(self.order) if self.order is not None else ntri
+        self.pos = 0
+        self.done = False
+
+    def step(self, n=None):
+        """处理最多 n 个三角面（None = 一次做完）；返回 True 表示整幅已完成。"""
+        if self.done:
+            return True
+        W, H = self.W, self.H
+        proj = self.proj
+        buf = self.buf
+        zbuf = self.zbuf
+        frgb = self.frgb
+        ftex = self.ftex
+        fcol = self.fcol
+        uv = self.uv
+        nuv = len(uv)
+        tris = self.mesh.tris
+        order = self.order
+        pos = self.pos
+        end = self.total if n is None else min(self.total, pos + n)
+
+        for k in range(pos, end):
+            i = k if order is None else order[k]
+            a, b, d = tris[i]
+            pa, pb, pd = proj[a], proj[b], proj[d]
+            ax, ay = pa[0], pa[1]
+            bx, by = pb[0], pb[1]
+            cx, cy = pd[0], pd[1]
+            # 屏幕包围盒（顺便裁掉退化面 / 亚像素面）
+            minx = ax if ax < bx else bx
+            if cx < minx:
+                minx = cx
+            maxx = ax if ax > bx else bx
+            if cx > maxx:
+                maxx = cx
+            miny = ay if ay < by else by
+            if cy < miny:
+                miny = cy
+            maxy = ay if ay > by else by
+            if cy > maxy:
+                maxy = cy
+            x0 = int(minx)
+            if x0 < 0:
+                x0 = 0
+            y0 = int(miny)
+            if y0 < 0:
+                y0 = 0
+            x1 = int(maxx)
+            if x1 >= W:
+                x1 = W - 1
+            y1 = int(maxy)
+            if y1 >= H:
+                y1 = H - 1
+            if x1 < x0 or y1 < y0:
+                continue
+
+            # 三条边的边函数及其像素步进量（比逐像素重算重心坐标快得多）
+            eab_dx = -(by - ay)
+            eab_dy = (bx - ax)
+            ebc_dx = -(cy - by)
+            ebc_dy = (cx - bx)
+            eca_dx = -(ay - cy)
+            eca_dy = (ax - cx)
+            sx0 = x0 + 0.5
+            sy0 = y0 + 0.5
+            eab0 = (bx - ax) * (sy0 - ay) - (by - ay) * (sx0 - ax)
+            ebc0 = (cx - bx) * (sy0 - by) - (cy - by) * (sx0 - bx)
+            eca0 = (ax - cx) * (sy0 - cy) - (ay - cy) * (sx0 - cx)
+            area2 = eab0 + ebc0 + eca0
+            if area2 == 0.0:
+                continue
+            if area2 < 0.0:                 # 统一绕序，内部判定恒为 >= 0
+                area2 = -area2
+                eab0, eab_dx, eab_dy = -eab0, -eab_dx, -eab_dy
+                ebc0, ebc_dx, ebc_dy = -ebc0, -ebc_dx, -ebc_dy
+                eca0, eca_dx, eca_dy = -eca0, -eca_dx, -eca_dy
+            inv = 1.0 / area2
+            za, zb, zc = pa[2], pb[2], pd[2]
+
+            col = frgb[i] if i < len(frgb) else (200, 200, 200)
+            tex = ftex[i] if (ftex and i < len(ftex)) else None
+            base = fcol[i] if (fcol and i < len(fcol)) else col
+            # 面法线（视图空间）→ 光照，整个面一个常量
+            ux, uy, uz = bx - ax, by - ay, zb - za
+            vx, vy, vz = cx - ax, cy - ay, zc - za
+            sh = _shade(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx)
+            cr0 = min(255, int(base[0] * sh))
+            cg0 = min(255, int(base[1] * sh))
+            cb0 = min(255, int(base[2] * sh))
+
+            if tex is not None and nuv > max(a, b, d):
+                ua, va = uv[a]
+                ub, vb = uv[b]
+                uc, vc = uv[d]
+                tp = tex.px
+                tw = tex.w
+                th = tex.h
+                twf = float(tw)
+                thf = float(th)
+            else:
+                tex = None
+
+            eab_r, ebc_r, eca_r = eab0, ebc0, eca0
+            if tex is None:
+                for py in range(y0, y1 + 1):
+                    eab = eab_r
+                    ebc = ebc_r
+                    eca = eca_r
+                    row0 = py * W
+                    for px in range(x0, x1 + 1):
+                        if eab >= 0.0 and ebc >= 0.0 and eca >= 0.0:
+                            idx = row0 + px
+                            z = (ebc * za + eca * zb + eab * zc) * inv
+                            if z > zbuf[idx]:
+                                zbuf[idx] = z
+                                o = idx * 3
+                                buf[o] = cr0
+                                buf[o + 1] = cg0
+                                buf[o + 2] = cb0
+                        eab += eab_dx
+                        ebc += ebc_dx
+                        eca += eca_dx
+                    eab_r += eab_dy
+                    ebc_r += ebc_dy
+                    eca_r += eca_dy
+            else:
+                # UV 也用增量步进，避免每个像素再做一遍重心插值
+                u_r = (ebc0 * ua + eca0 * ub + eab0 * uc) * inv
+                v_r = (ebc0 * va + eca0 * vb + eab0 * vc) * inv
+                du_dx = (ebc_dx * ua + eca_dx * ub + eab_dx * uc) * inv
+                dv_dx = (ebc_dx * va + eca_dx * vb + eab_dx * vc) * inv
+                du_dy = (ebc_dy * ua + eca_dy * ub + eab_dy * uc) * inv
+                dv_dy = (ebc_dy * va + eca_dy * vb + eab_dy * vc) * inv
+                for py in range(y0, y1 + 1):
+                    eab = eab_r
+                    ebc = ebc_r
+                    eca = eca_r
+                    u = u_r
+                    v = v_r
+                    row0 = py * W
+                    for px in range(x0, x1 + 1):
+                        if eab >= 0.0 and ebc >= 0.0 and eca >= 0.0:
+                            idx = row0 + px
+                            z = (ebc * za + eca * zb + eab * zc) * inv
+                            if z > zbuf[idx]:
+                                zbuf[idx] = z
+                                uu = u
+                                if uu >= 1.0:
+                                    uu -= int(uu)
+                                elif uu < 0.0:
+                                    uu -= int(uu) - 1
+                                vv = v
+                                if vv >= 1.0:
+                                    vv -= int(vv)
+                                elif vv < 0.0:
+                                    vv -= int(vv) - 1
+                                xi = int(uu * twf)
+                                if xi >= tw:
+                                    xi = tw - 1
+                                yi = int(vv * thf)
+                                if yi >= th:
+                                    yi = th - 1
+                                o2 = (yi * tw + xi) << 2
+                                o = idx * 3
+                                buf[o] = (cr0 * tp[o2]) // 255
+                                buf[o + 1] = (cg0 * tp[o2 + 1]) // 255
+                                buf[o + 2] = (cb0 * tp[o2 + 2]) // 255
+                        eab += eab_dx
+                        ebc += ebc_dx
+                        eca += eca_dx
+                        u += du_dx
+                        v += dv_dx
+                    eab_r += eab_dy
+                    ebc_r += ebc_dy
+                    eca_r += eca_dy
+                    u_r += du_dy
+                    v_r += dv_dy
+
+        self.pos = end
+        if end >= self.total:
+            self.done = True
+            if self.show_bones:
+                self._draw_bones()
+            return True
+        return False
+
+    def _draw_bones(self):
+        buf = self.buf
+        W, H = self.W, self.H
+        ctr, rot = self.ctr, self.rot
+        ox, oy, fit = self.ox, self.oy, self.fit
+        for bp in self.mesh.bones:
             v = _view_point(bp, ctr, rot)
             ix, iy = int(ox + v[0] * fit), int(oy - v[1] * fit)
-            for dx in range(-2, 3):
-                for dy in range(-2, 3):
+            for dy in range(-2, 3):
+                for dx in range(-2, 3):
                     if abs(dx) + abs(dy) > 3:
                         continue
                     px, py = ix + dx, iy + dy
                     if 0 <= px < W and 0 <= py < H:
-                        img[py][px] = [220, 40, 40]
-    return img
+                        o = (py * W + px) * 3
+                        buf[o] = 220
+                        buf[o + 1] = 40
+                        buf[o + 2] = 40
 
 
-def rows_to_ppm(rows):
-    """[[r,g,b]] → PPM(P6) 字节，供 tk.PhotoImage 直接使用。"""
-    h = len(rows)
-    w = len(rows[0]) if h else 0
-    out = bytearray(("P6\n%d %d\n255\n" % (w, h)).encode("ascii"))
-    for r in rows:
-        out += bytes(b for px in r for b in px)
-    return bytes(out)
+def render(mesh, size=560, yaw=0.0, pitch=0.0, zoom=1.0, show_bones=False,
+           bg=(247, 249, 252), pan=(0.0, 0.0), max_tris=None):
+    """一次性软件光栅化（离屏 / CLI 用）；GUI 实时预览走 Rasterizer 分片推进。
+
+    size 可以是整数（正方形）或 (W, H)，返回 (W, H, buf)。
+    """
+    if not mesh.verts or not mesh.tris:
+        return None
+    r = Rasterizer(mesh, size, yaw=yaw, pitch=pitch, zoom=zoom,
+                   show_bones=show_bones, bg=bg, pan=pan, max_tris=max_tris)
+    r.step()
+    return (r.W, r.H, r.buf)
 
 
 # --------------------------------------------------------------------- CLI --

@@ -145,6 +145,17 @@ LANG = {
         "log_title": "转换日志",
         "preview_title": "模型预览（背视图实时预览 · 可拖动旋转 / 滚轮缩放）",
         "preview_stats": "拖入任意格式的模型即可实时背视图预览",
+        "pv_front": "正视",
+        "pv_left": "左视",
+        "pv_back": "背视",
+        "pv_top": "俯视",
+        "pv_reset": "复位",
+        "pv_spin": "自转",
+        "pv_bone": "骨骼",
+        "pv_wire": "线框",
+        "pv_placeholder": "拖入模型后这里实时显示背视图预览\n（按住拖动可旋转，滚轮缩放）",
+        "pv_stats": "{name}\n顶点 {v} · 三角面 {t}\n骨骼 {b} · 材质 {m}{size}",
+        "pv_stats_file": "\n文件 {size}",
         "tab_general": "通用",
         "tab_fbx": "FBX 选项",
         "tab_vrm": "VRM 选项",
@@ -213,6 +224,17 @@ LANG = {
         "log_title": "轉換日誌",
         "preview_title": "模型預覽（背視圖即時預覽 · 可拖曳旋轉 / 滾輪縮放）",
         "preview_stats": "拖入任意格式的模型即可即時背視圖預覽",
+        "pv_front": "正視",
+        "pv_left": "左視",
+        "pv_back": "背視",
+        "pv_top": "俯視",
+        "pv_reset": "復位",
+        "pv_spin": "自轉",
+        "pv_bone": "骨骼",
+        "pv_wire": "線框",
+        "pv_placeholder": "拖入模型後這裡即時顯示背視圖預覽\n（按住拖曳可旋轉，滾輪縮放）",
+        "pv_stats": "{name}\n頂點 {v} · 三角面 {t}\n骨骼 {b} · 材質 {m}{size}",
+        "pv_stats_file": "\n檔案 {size}",
         "tab_general": "通用",
         "tab_fbx": "FBX 選項",
         "tab_vrm": "VRM 選項",
@@ -281,6 +303,17 @@ LANG = {
         "log_title": "Conversion log",
         "preview_title": "Model preview (live back view · drag to rotate / wheel to zoom)",
         "preview_stats": "Drop any model format to see a live back view preview",
+        "pv_front": "Front",
+        "pv_left": "Left",
+        "pv_back": "Back",
+        "pv_top": "Top",
+        "pv_reset": "Reset",
+        "pv_spin": "Spin",
+        "pv_bone": "Bones",
+        "pv_wire": "Wire",
+        "pv_placeholder": "Drop a model here to see the live back view\n(drag to rotate · wheel to zoom)",
+        "pv_stats": "{name}\nVerts {v} · Tris {t}\nBones {b} · Materials {m}{size}",
+        "pv_stats_file": "\nFile {size}",
         "tab_general": "General",
         "tab_fbx": "FBX",
         "tab_vrm": "VRM",
@@ -349,6 +382,17 @@ LANG = {
         "log_title": "変換ログ",
         "preview_title": "モデルプレビュー（背面部 リアルタイム・ドラッグで回転／ホイールで拡大）",
         "preview_stats": "任意の形式のモデルをドロップすると背面部が表示されます",
+        "pv_front": "正面",
+        "pv_left": "左面",
+        "pv_back": "背面",
+        "pv_top": "上面",
+        "pv_reset": "リセット",
+        "pv_spin": "回転",
+        "pv_bone": "ボーン",
+        "pv_wire": "ワイヤー",
+        "pv_placeholder": "モデルをドロップすると背面部がここに表示されます\n（ドラッグで回転／ホイールで拡大）",
+        "pv_stats": "{name}\n頂点 {v} · 三角面 {t}\nボーン {b} · マテリアル {m}{size}",
+        "pv_stats_file": "\nファイル {size}",
         "tab_general": "共通",
         "tab_fbx": "FBX",
         "tab_vrm": "VRM",
@@ -817,6 +861,7 @@ class ConverterApp:
         self.var_lang = tk.StringVar(value="zh_CN")
         self.zoom = None                      # None = 跟随系统 DPI
         self.dnd_ok = None
+        self._split = 0.60                    # 左右分栏比例（预览占右侧 40%）
 
         self._load_settings()
         self._build()
@@ -829,10 +874,11 @@ class ConverterApp:
         r = self.root
         r.title(t("app_title"))
         r.configure(bg=BG)
-        w = max(px(720), min(px(940), r.winfo_screenwidth() - px(40)))
-        h = max(px(560), min(px(740), r.winfo_screenheight() - px(90)))
+        # 右侧要放整条预览栏，窗口下限宽度得留够
+        w = max(px(920), min(px(1240), r.winfo_screenwidth() - px(60)))
+        h = max(px(600), min(px(800), r.winfo_screenheight() - px(100)))
         r.geometry("%dx%d" % (w, h))
-        r.minsize(min(px(780), w), min(px(600), h))
+        r.minsize(min(px(860), w), min(px(560), h))
 
         outer = tk.Frame(r, bg=BG)
         outer.pack(fill="both", expand=True, padx=px(16), pady=px(14))
@@ -865,8 +911,22 @@ class ConverterApp:
         tk.Label(head, text=t("subtitle"),
                  font=F_SUB, bg=BG, fg=MUTED).pack(anchor="w", pady=(px(2), 0))
 
+        # ---- 主体：左右分栏（Blender 那种可以拖动分割条的排版）
+        # 左栏 = 拖放 + 选项 + 按钮 + 日志；右栏 = 整条高度的模型预览。
+        # 分割条位置会记进 config.json，下次打开还在原来的地方。
+        self.panes = tk.PanedWindow(outer, orient="horizontal", bg="#d3dae4",
+                                    bd=0, sashwidth=px(10), sashrelief="flat",
+                                    sashpad=0, handlesize=px(6),
+                                    opaqueresize=True)
+        self.panes.pack(fill="both", expand=True, pady=(px(12), 0))
+        left = tk.Frame(self.panes, bg=BG)
+        self.panes.add(left, minsize=px(430), stretch="always", width=px(620))
+        right = tk.Frame(self.panes, bg=BG)
+        self.panes.add(right, minsize=px(300), stretch="always", width=px(420))
+        self._restore_split()
+
         # ---- drop zone
-        self.dz = tk.Canvas(outer, height=px(126), bg=CARD, highlightthickness=1,
+        self.dz = tk.Canvas(left, height=px(126), bg=CARD, highlightthickness=1,
                             highlightbackground=BORDER, cursor="hand2")
         self.dz.pack(fill="x", pady=(px(12), 0))
         self.dz.bind("<Configure>", lambda e: self._draw_dropzone())
@@ -875,7 +935,7 @@ class ConverterApp:
         self.dz.bind("<Button-1>", lambda e: self.browse())
 
         # ---- options（Notebook 分页：为将来加功能预留扩展空间）
-        nb = ttk.Notebook(outer)
+        nb = ttk.Notebook(left)
         nb.pack(fill="x", pady=(px(10), 0))
         self._style_notebook(nb)
 
@@ -890,9 +950,13 @@ class ConverterApp:
                                      command=self._on_task)
         self._style_om(self.om_task, width=26)
         self.om_task.pack(side="left")
-        self.lbl_hint = tk.Label(row0, text="", font=F_SMALL, bg=CARD,
-                                 fg=MUTED)
-        self.lbl_hint.pack(side="left", padx=(px(12), 0))
+        # 分栏后左栏会变窄，提示文字单独占一行并跟着栏宽自动折行
+        self.lbl_hint = tk.Label(tab_g, text="", font=F_SMALL, bg=CARD,
+                                 fg=MUTED, justify="left", anchor="w")
+        self.lbl_hint.pack(fill="x", padx=px(14), pady=(px(6), 0))
+        tab_g.bind("<Configure>",
+                   lambda e: self.lbl_hint.configure(
+                       wraplength=max(px(150), e.width - px(28))))
 
         row1 = tk.Frame(tab_g, bg=CARD)
         row1.pack(fill="x", padx=px(14), pady=(px(8), 0))
@@ -958,7 +1022,7 @@ class ConverterApp:
         self.btn_browse_out.pack(side="left")
 
         # ---- actions
-        act = tk.Frame(outer, bg=BG)
+        act = tk.Frame(left, bg=BG)
         act.pack(fill="x", pady=(px(12), 0))
         self.btn_go = self._btn(act, t("start"), self.start_from_ui,
                                 kind="primary")
@@ -972,19 +1036,13 @@ class ConverterApp:
                                    bg=BG, fg=MUTED)
         self.lbl_status.pack(side="right")
 
-        # ---- panes
-        panes = tk.Frame(outer, bg=BG)
-        panes.pack(fill="both", expand=True, pady=(px(10), 0))
-        panes.columnconfigure(0, weight=3, uniform="c")
-        panes.columnconfigure(1, weight=2, uniform="c")
-        panes.rowconfigure(0, weight=1)
-
-        left = self._card(panes, t("log_title"))
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, px(8)))
-        self.txt = tk.Text(left, font=F_MONO, bg=CARD, fg=TXT, relief="flat",
+        # ---- 左栏底部：日志（吃掉剩余高度）
+        logbox = self._card(left, t("log_title"))
+        logbox.pack(fill="both", expand=True, pady=(px(10), 0))
+        self.txt = tk.Text(logbox, font=F_MONO, bg=CARD, fg=TXT, relief="flat",
                            wrap="none", height=14, highlightthickness=0,
                            padx=px(10), pady=px(8), insertbackground=TXT)
-        sb = tk.Scrollbar(left, command=self.txt.yview, relief="flat",
+        sb = tk.Scrollbar(logbox, command=self.txt.yview, relief="flat",
                           bd=0, width=px(14))
         self.txt.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
@@ -998,18 +1056,24 @@ class ConverterApp:
         self.txt.tag_configure("mono", foreground="#3a4250")
         self.txt.configure(state="disabled")
 
-        right = self._card(panes, t("preview_title"))
-        right.grid(row=0, column=1, sticky="nsew")
-        pvbox = tk.Frame(right, bg=CARD,
+        # ---- 右栏：模型预览（整列高度，跟 Blender 的 3D 视图区一个位置）
+        pvcard = self._card(right, t("preview_title"))
+        pvcard.pack(fill="both", expand=True)
+        pvbox = tk.Frame(pvcard, bg=CARD,
                          highlightthickness=1, highlightbackground=BORDER)
         pvbox.pack(fill="both", expand=True, padx=px(8), pady=(px(2), px(6)))
-        self.pv = model_preview.Preview3D(pvbox, size=PREVIEW_BASE,
-                                          uiscale=UI_SCALE)
+        self.pv = model_preview.Preview3D(
+            pvbox, size=PREVIEW_BASE, uiscale=UI_SCALE,
+            labels=model_preview.pv_labels(
+                front=t("pv_front"), left=t("pv_left"), back=t("pv_back"),
+                top=t("pv_top"), reset=t("pv_reset"), spin=t("pv_spin"),
+                bone=t("pv_bone"), wire=t("pv_wire"),
+                placeholder=t("pv_placeholder")))
         self.pv.pack(fill="both", expand=True)
         self.pv.set_bones(bool(self.var_bones.get()))
-        self.lbl_stats = tk.Label(right, text=t("preview_stats"),
+        self.lbl_stats = tk.Label(pvcard, text=t("preview_stats"),
                                   font=F_SMALL, bg=CARD, fg=MUTED,
-                                  justify="left", wraplength=px(300))
+                                  justify="left", wraplength=px(360))
         self.lbl_stats.pack(anchor="w", padx=px(10), pady=(0, px(10)))
 
         # ---- progress
@@ -1023,8 +1087,37 @@ class ConverterApp:
         self._pick_scale()
         self._update_hint()
         self._draw_dropzone()
+        # 分割条位置要等窗口有真实宽度之后才能落到正确的地方
+        self.root.after(80, self._poll_split)
         # 拖放注册必须等所有子控件的原生窗口真正创建后再做，见 _schedule_dnd。
         self._schedule_dnd()
+
+    # --------------------------------------------------------- split pane --
+    def _restore_split(self):
+        """恢复上次记下的左右分栏比例（要到窗口有尺寸之后才生效）。"""
+        try:
+            frac = getattr(self, "_split", None)
+            total = self.panes.winfo_width()
+            if total > 1 and frac:
+                x = int(total * frac)
+                self.panes.sash_place(0, x, 0)
+                return True
+            return total > 1
+        except Exception:
+            return True
+
+    def _poll_split(self, tries=0):
+        if not self._restore_split() and tries < 20:
+            self.root.after(60, lambda: self._poll_split(tries + 1))
+
+    def _save_split(self):
+        try:
+            total = self.panes.winfo_width()
+            x, _y = self.panes.sash_coord(0)
+            if total > 1 and x > 0:
+                self._split = min(0.85, max(0.28, x / float(total)))
+        except Exception:
+            pass
 
     def _card(self, parent, title):
         box = tk.Frame(parent, bg=CARD, highlightthickness=1,
@@ -1219,6 +1312,10 @@ class ConverterApp:
             except Exception:
                 text = None
         self._progress(False)
+        try:
+            self._save_split()          # 重建前先记下当前分割位置
+        except Exception:
+            pass
         for child in self.root.winfo_children():
             child.destroy()
         self._build()
@@ -1259,6 +1356,12 @@ class ConverterApp:
             self.var_scale_custom.set(mode == "custom")
             self.zoom = norm_zoom(s.get("ui_zoom"))
             self.var_zoom.set(zoom_label(self.zoom))
+            try:
+                sp = float(s.get("split", 0.6))
+                if 0.2 < sp < 0.9:
+                    self._split = sp
+            except Exception:
+                pass
             self.var_vrm_spec.set(s.get("vrm_spec", "1.0"))
             self.var_morphs.set(bool(s.get("export_morphs", True)))
             self.var_two_sided.set(bool(s.get("force_two_sided", False)))
@@ -1280,6 +1383,10 @@ class ConverterApp:
         try:
             mode = ("auto" if self.var_scale_auto.get() else
                     "raw" if self.var_scale_raw.get() else "custom")
+            try:
+                self._save_split()
+            except Exception:
+                pass
             with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
                 json.dump({"flip_z": self.var_flipz.get(),
                            "show_bones": self.var_bones.get(),
@@ -1298,7 +1405,8 @@ class ConverterApp:
                            "vrm2pmx_edge": self.var_edge.get(),
                            "center": self.var_center.get(),
                            "fbx_morphs": self.var_fbx_morphs.get(),
-                           "remove_alpha": self.var_remove_alpha.get()},
+                           "remove_alpha": self.var_remove_alpha.get(),
+                           "split": getattr(self, "_split", 0.6)},
                           f, ensure_ascii=False, indent=2)
         except Exception:
             pass
@@ -1722,11 +1830,10 @@ class ConverterApp:
         name = os.path.basename(pmx) if pmx else mesh.name
         extra = ""
         if pmx and os.path.exists(pmx):
-            extra = "\n文件 %s" % human(os.path.getsize(pmx))
+            extra = t("pv_stats_file", size=human(os.path.getsize(pmx)))
         self.lbl_stats.configure(
-            text=("%s\n顶点 %d · 三角面 %d\n骨骼 %d · 材质 %d%s"
-                  % (name, st["verts"], st["tris"], st["bones"],
-                     st["mats"], extra)))
+            text=t("pv_stats", name=name, v=st["verts"], t=st["tris"],
+                   b=st["bones"], m=st["mats"], size=extra))
 
     def _preview_sources(self, files):
         """挑出能直接预览的文件（排除目录）。"""

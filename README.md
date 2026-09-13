@@ -50,7 +50,7 @@ Download the latest version from [releases](https://github.com/SaraKale/Model-to
 ## 3. Directory structure
 
 ```
-FBX-VRM转PMX-Python_预览优化版/
+Model-to-PMX/
 ├── main.py                      # ★ GUI entry point (full implementation)
 ├── main.spec                    # ★ PyInstaller build config
 ├── config.json                  # UI settings (language / zoom / options, etc.)
@@ -85,14 +85,29 @@ FBX-VRM转PMX-Python_预览优化版/
 1. Run `python main.py`
 2. **Drag** a `.fbx` / `.unitypackage` / `.vrm` / `.pmx` file **anywhere into the window**, or click the drop area to choose a file.
 1. The "Task" dropdown can manually specify the conversion direction; by default it is auto-detected from the file extension.
-2. Conversion results show in the log area at the bottom; the live preview is on the right.
+2. Conversion log sits at the bottom-left; the model preview is the full-height right column.
 
 UI highlights:
 
-- **"Language" (top-right)**: Simplified Chinese / Traditional Chinese / English / Japanese
+- **Split view**: drag the divider in the middle to resize, just like Blender's areas; the position is saved in `config.json`
+- **Full-height preview column**: live back view, with Front / Left / Back / Top / Reset / Spin / Bones / Wire in the toolbar below it
+- **Render backend badge (bottom-right of the preview)**: shows whether `Pillow` or pure Python is in use, plus the last frame time in ms
+- **"Language" (top-right)**: Simplified Chinese / Traditional Chinese / English / Japanese (the preview toolbar follows too)
 - **"UI zoom" (top-right)**: Auto-follows system DPI, or set a manual factor
 - **Option tabs**: General / FBX / VRM / Output, four tabs
 - **Enlarged checkboxes**: The checkboxes and click areas are easier to hit
+
+### Why the preview stays smooth on heavy models
+
+The live preview is a pure-Python software rasterizer (no OpenGL), so it works in three layers:
+
+1. **Decimated mesh while dragging** — interactively renders ~12k triangles, so a
+   90k-triangle model costs about 40 ms per frame;
+2. **Sliced refinement after you stop** — the refined frame advances 1500 triangles
+   per slice, capped at 24 ms per time slice, so the picture sharpens piece by piece
+   without freezing the UI;
+3. **Adaptive pixel budget** — resolution scales with the measured frame time, and
+   Pillow (when installed) upscales the low-res result to canvas size in C.
 
 ### Method 2: Command line
 
