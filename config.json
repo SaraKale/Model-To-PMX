@@ -1,0 +1,19 @@
+{
+  "flip_z": true,
+  "show_bones": false,
+  "open_after": false,
+  "same_dir": true,
+  "outdir": "",
+  "scale_mode": "auto",
+  "scale_value": "1.0",
+  "ui_zoom": "auto",
+  "lang": "en",
+  "task": "auto",
+  "vrm_spec": "1.0",
+  "export_morphs": true,
+  "force_two_sided": true,
+  "vrm2pmx_edge": false,
+  "center": true,
+  "fbx_morphs": true,
+  "remove_alpha": true
+}

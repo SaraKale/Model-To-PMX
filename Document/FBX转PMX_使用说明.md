@@ -1,0 +1,103 @@
+# FBX → PMX 转换说明
+
+这套脚本不需要 Blender、不需要 Autodesk FBX SDK、不需要 mmd_tools，纯 Python 标准库
+（3.10+）即可运行。
+
+## 工具清单
+
+| 文件 | 作用 |
+|---|---|
+| `formats/unitypackage_unpack.py` | 解包 `.unitypackage`（本质是 gzip tar） |
+| `formats/fbx_reader.py` | 二进制 FBX（7.x）解析库，被下面两个脚本调用 |
+| `convert/fbx2pmx.py` | **FBX → PMX 2.0 转换器** |
+| `formats/fbx_probe.py` | 探查 FBX 结构（网格 / 骨骼 / 蒙皮清单） |
+| `convert/pmx_check.py` | 校验 PMX 结构 + 软件渲染预览图 |
+| `formats/pmxio.py` | 完整 PMX 读写库（VRM 互转用） |
+| `formats/vrmio.py` | GLB/glTF 容器读写 + 图片编解码 |
+| `convert/pmx2vrm.py` | **PMX → VRM 转换器**，见 `VRM互转_使用说明.md` |
+| `convert/vrm2pmx.py` | **VRM → PMX 转换器**，见 `VRM互转_使用说明.md` |
+| `gfx/preview.py` | 实时 3D 背视图预览控件（GUI 调用） |
+| `PMX转换器.py` | 图形界面（根目录），FBX / VRM / PMX 都可以拖进去转；右上角可切换语言 |
+
+## 常用命令
+
+路径带空格或中文，一定要加双引号。
+
+```powershell
+# 1. 解包 unitypackage（--list 只列内容不解包）
+python formats/unitypackage_unpack.py "Sexy Sailor_Sapphy_v1.00.unitypackage" --list
+python formats/unitypackage_unpack.py "Sexy Sailor_Sapphy_v1.00.unitypackage"
+
+# 2. 先看看 FBX 里有什么
+python formats/fbx_probe.py "model.fbx"
+
+# 3. 转换成 PMX
+python convert/fbx2pmx.py "model.fbx" -o "model.pmx"
+
+# 4. 校验并生成预览图
+python convert/pmx_check.py "model.pmx"
+python convert/pmx_check.py "model.pmx" --bones    # 叠加骨骼位置，检查是否与网格对齐
+```
+
+`fbx2pmx.py` 的可选参数：
+
+| 参数 | 说明 |
+|---|---|
+| `--scale mmd` | 默认。自动缩放到 MMD 标准身高（约 20 单位） |
+| `--scale raw` | 保持 FBX 原始尺寸（米） |
+| `--scale 12.5` | 手动指定缩放倍数 |
+| `--no-flip-z` | 不做右手系→左手系转换（默认会转） |
+| `--info` | 只打印结构信息，不转换 |
+
+## 转换映射关系
+
+| FBX | PMX |
+|---|---|
+| `Geometry` 顶点 / `PolygonVertexIndex` | 顶点表 + 三角形（四边形自动扇形三角化） |
+| `LayerElementUV`（ByPolygonVertex / IndexToDirect） | UV0（V 轴已翻转 1-v） |
+| `LayerElementNormal` | 顶点法线 |
+| `Model(type=Mesh)` ← `Material` 连接 | 每个网格一个材质绘制段 |
+| `Deformer/Skin` + `Cluster` 的 Indexes/Weights | 骨骼权重（按影响数选 BDEF1 / BDEF2 / BDEF4） |
+| `Model(type=LimbNode)` 层级 | 骨骼（父子关系、位置） |
+| 1 个显示枠 | 列出全部骨骼 |
+
+三角形绕序会自动判定：用几何面法线与导入的顶点法线做一致性投票，方向相反则整体反绕，
+保证法线朝外。
+
+## 本次转换结果
+
+源文件 `Sexy Sailor_Sapphy.fbx`（FBX 7400，二进制，32 位偏移）：
+
+| 项目 | 数值 |
+|---|---|
+| 顶点 | 47640 |
+| 三角形 | 74926 |
+| 骨骼 | 196 |
+| 材质 | 18 |
+| 表情 morph | 0 |
+| 刚体 / 关节 | 0 / 0 |
+| 文件大小 | 2.58 MB |
+| 缩放 | 14.4674（原高 1.382 m → 20 单位） |
+
+校验结果：字节数精确匹配、无越界索引、权重和全部为 1、材质面覆盖完整。
+
+## 必须知道的三个限制
+
+**1. 源 FBX 里没有头部网格。** 这不是转换丢失。`UV SKMZ`（皮肤）的 Y 范围是
+0.670~1.087，只到肩膀；最高的部件是帽子 `UVACC hat`（到 1.369）。而骨架里却有
+`Head`、`Eye_L`、`Eye_R` 骨骼。也就是说这个包是「身体 + 服装」，头部/脸需要另一个
+资源包。在 MMD 里加载会看到一个无头的身体。
+
+**2. 没有表情。** 源 FBX 的 `BlendShape` 数量为 0，所以 PMX 的 morph 也是 0。
+要眨眼、做口型，只能在 PMXEditor 里手工建。
+
+**3. 没有贴图和物理。** FBX 里没有 `Texture`/`Video` 节点，unitypackage 也没打包图片，
+所以材质是纯色白模。另外裙子有 68 根骨骼（`skirt_00_00` ~ `skirt_16_03`），
+在 MMD 里不会自己飘，需要在 PMXEditor 里配刚体 + 关节。
+
+## 关于骨骼命名
+
+MMD 的动作数据（.vmd）按骨骼名匹配，日文标准名（`センター`、`上半身`、`左腕` 等）
+才能套用现成动作。这份 PMX 保留了 FBX 的英文名（`Hips`、`Spine`、`Left arm` …），
+模型本身能正常显示和手动摆姿势，但直接套 MMD 动作是匹配不上的。
+需要的话可以在 PMXEditor 里批量改名。
