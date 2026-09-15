@@ -20,7 +20,7 @@ render_to_png / `python preview.py "model.pmx" -o out.png`（独立于实时预�
 
 主要接口：
     load_preview(path, kind=None, log=None)  -> Mesh
-    Preview3D(master, size=360, ...)         # tkinter 实时预览控件（背视图）
+    Preview3D(master, size=480, ...)         # tkinter 实时预览控件（背视图）
     Rasterizer(mesh, size, ...).step(n)      # 可分片推进的软光栅器
     render(mesh, size, ...)                  # 一次画完，返回 (W, H, buf)
     render_to_png(mesh, path, size=560, ...) # 仅命令行离屏渲染用，GUI 预览不调用
@@ -85,9 +85,14 @@ def get_imagetk():
     return _PIL_ImageTk
 
 
-# 预览贴图分辨率上限：预览框很小，2048/4096 的贴图没必要全分辨率解码，
-# 既省内存又避免渲染时逐像素采样大图。
-PREVIEW_TEX_MAX = 1024
+# 预览贴图分辨率上限：改为 2048，在高分屏 / 放大查看时贴图细节更清晰。
+# 内存占用增加有限，但能有效减少放大后的贴图模糊。
+PREVIEW_TEX_MAX = 2048
+
+# 透明度裁剪阈值（0~255）。低于它的像素整块丢弃（露出后面的面/背景），
+# 高于它的按 alpha 混合。蕾丝、发梢、裙纱这些靠贴图 alpha 挖洞的材质，
+# 以前会被当成实心画出来（透明区通常是黑的），于是满屏黑边黑点。
+ALPHA_CUT = 90
 
 # 默认预览视角：背视图（yaw=180°，朝模型背面看）。实时预览只显示不保存。
 DEFAULT_YAW = math.radians(180.0)
@@ -413,6 +418,7 @@ class Mesh:
         self.face_rgb = []       # 每面颜色 (r, g, b)
         self.face_tex = []       # 每面贴图 Image（或 None）
         self.face_col = []       # 每面基色 (r, g, b)
+        self.face_alpha = []     # 每面材质不透明度 0~1（PMX diffuse.a / VRM baseColorFactor.a）
         self.bones = []          # [(x, y, z)]
         self.materials = []      # 原始材质信息
         self._bbox = None
@@ -445,7 +451,8 @@ class Mesh:
                     if img is None:
                         img = _tex_of(search, rel)
                         tex_cache[rel] = img
-                mats.append({"color": col, "tex": img, "name": mat.get("name", "")})
+                mats.append({"color": col, "tex": img, "name": mat.get("name", ""),
+                             "alpha": d[3] if len(d) > 3 else 1.0})
             _resolve_face_colors(self, st["face_mat"], mats)
         elif kind == "vrm":
             gltf = st["gltf"]
@@ -497,6 +504,7 @@ class Mesh:
         if len(self.face_rgb) == n:
             return
         self.face_rgb = [(210, 205, 200)] * n
+        self.face_alpha = [1.0] * n
 
     def build_lod(self, target=15000):
         """抽稀出一个只用于“拖动时”的轻量网格；面数本来就不多则返回 None。
@@ -518,6 +526,7 @@ class Mesh:
         frgb = []
         ftex = []
         fcol = []
+        falpha = []
         for ti in order:
             nt = []
             for vi in self.tris[ti]:
@@ -534,6 +543,8 @@ class Mesh:
             ftex.append(self.face_tex[ti] if ti < len(self.face_tex) else None)
             fcol.append(self.face_col[ti] if ti < len(self.face_col)
                         else (210, 205, 200))
+            falpha.append(self.face_alpha[ti] if ti < len(self.face_alpha)
+                          else 1.0)
         out = Mesh(self.name)
         out.verts = verts
         out.uv = uv
@@ -541,6 +552,7 @@ class Mesh:
         out.face_rgb = frgb
         out.face_tex = ftex
         out.face_col = fcol
+        out.face_alpha = falpha
         out.bones = self.bones
         out.materials = self.materials
         out.rev = self.rev
@@ -555,13 +567,15 @@ def _resolve_face_colors(mesh, face_mat, mats):
     """face_mat: 每个三角面的材质下标；mats: [{color, tex}]。
 
     同时产出：
-        face_rgb  —— 每面的代表色（实时预览用，取贴图重心色）
-        face_tex  —— 每面的贴图对象（离屏渲染时逐像素采样，最接近原图）
-        face_col  —— 每面的基色
+        face_rgb   —— 每面的代表色（实时预览用，取贴图重心色）
+        face_tex   —— 每面的贴图对象（离屏渲染时逐像素采样，最接近原图）
+        face_col   —— 每面的基色
+        face_alpha —— 每面的材质不透明度（贴图自身的 alpha 在光栅化时再判）
     """
     colors = []
     texes = []
     cols = []
+    alphas = []
     for ti, tri in enumerate(mesh.tris):
         mi = face_mat[ti] if ti < len(face_mat) else 0
         mat = mats[mi] if 0 <= mi < len(mats) else None
@@ -569,9 +583,16 @@ def _resolve_face_colors(mesh, face_mat, mats):
             colors.append((210, 205, 200))
             texes.append(None)
             cols.append((210, 205, 200))
+            alphas.append(1.0)
             continue
         r, g, b = mat.get("color", (210, 205, 200))
         tex = mat.get("tex")
+        al = mat.get("alpha", 1.0)
+        try:
+            al = float(al)
+        except (TypeError, ValueError):
+            al = 1.0
+        alphas.append(0.0 if al < 0.0 else (1.0 if al > 1.0 else al))
         cols.append((r, g, b))
         texes.append(tex)
         if tex is not None:
@@ -589,6 +610,7 @@ def _resolve_face_colors(mesh, face_mat, mats):
     mesh.face_rgb = colors
     mesh.face_tex = texes
     mesh.face_col = cols
+    mesh.face_alpha = alphas
 
 
 def _tex_of(search_dirs, rel):
@@ -632,7 +654,8 @@ def mesh_from_pmx(path, log=None, with_textures=True):
             else:
                 img = _tex_of(search, rel)
                 tex_cache[rel] = img
-        mats.append({"color": col, "tex": img, "name": mat.get("name", "")})
+        mats.append({"color": col, "tex": img, "name": mat.get("name", ""),
+                     "alpha": d[3] if len(d) > 3 else 1.0})
     mesh.materials = mats
 
     for v in m["vertices"]:
@@ -728,7 +751,8 @@ def mesh_from_vrm(path, log=None, with_textures=True):
         if with_textures and bt is not None:
             tex = (gltf.get("textures") or [])[bt] if bt < len(gltf.get("textures") or []) else {}
             img = _mat_image(gltf, bin_data, tex.get("source"), img_cache)
-        mat_cache.append({"color": col, "tex": img, "name": gm.get("name", "")})
+        mat_cache.append({"color": col, "tex": img, "name": gm.get("name", ""),
+                          "alpha": f[3] if len(f) > 3 else 1.0})
     mesh.materials = mat_cache
 
     face_mat = []
@@ -834,7 +858,8 @@ def mesh_from_fbx(path, flip_z=True, log=None, with_textures=True):
                 img = _find_fbx_texture(fbx_dir, t.get("rel"), t.get("name"))
                 if img is not None and "diffuse" in name.lower():
                     break
-        return {"color": col, "tex": img, "name": node.props[1] if node is not None else ""}
+        return {"color": col, "tex": img, "alpha": alpha,
+                "name": node.props[1] if node is not None else ""}
 
     geo_ids = [nid for nid, n in scene.byid.items()
                if n.name == "Geometry" and nid in scene.geometry_model]
@@ -1043,20 +1068,23 @@ if tk is not None:
         ACCENT = "#2f6fed"
         ACCENT_SOFT = "#e8f0ff"
 
-        FAST_MAX = 15000        # 线框模式下最多画出的三角面数
+        FAST_MAX = 25000        # 线框模式下最多画出的三角面数
 
-        # 交互与精修的节奏：拖动时按 ~12ms 一帧出低清图，停手 150ms 后出精修图
+        # 交互与精修的节奏：拖动时按 ~12ms 一帧出图，停手 80ms 后出精修图
         FAST_DELAY = 12
-        FULL_DELAY = 150
-        FAST_PX = 26000         # 交互时的像素预算（≈160×170）
-        MIN_PX = 11000
-        START_PX = 110000       # 精修起始像素预算，之后按实测耗时自适应
-        MAX_PX = 420000         # 精修像素上限，再高只是白白烧 CPU
-        LOD_TRIS = 12000        # 交互用的轻量网格目标面数（≈ 25fps）
-        SLICE = 1500            # 精修渲染每片推进的三角面数
-        SLICE_MS = 0.024        # 精修渲染每个时间片最长占用（秒）
+        FULL_DELAY = 80
+        # 高清参数：提高像素预算，把最大降采样限制在 2×2 以内，
+        # 静止时尽量 1:1 渲染，拖动时最多 2×2 降采样，显著减少马赛克。
+        FAST_PX = 240000         # 交互时的像素预算（480×480 以下可 1:1 渲染）
+        MIN_PX = 150000          # 精修预算下限，避免被自适应压得太糊
+        START_PX = 1600000       # 精修起始像素预算，静止时优先全分辨率
+        MAX_PX = 1600000         # 精修像素上限，支持 960×960 以内 1:1 渲染
+        # 注：以上数值可按机器性能继续上调；MAX_PX 大于等于画布面积时即 1:1 渲染。
+        LOD_TRIS = 30000         # 交互用的轻量网格目标面数（更精细）
+        SLICE = 3000             # 精修渲染每片推进的三角面数
+        SLICE_MS = 0.05          # 精修渲染每个时间片最长占用（秒）
 
-        def __init__(self, master, size=360, uiscale=1.0, labels=None, **kw):
+        def __init__(self, master, size=480, uiscale=1.0, labels=None, **kw):
             super().__init__(master, bg=self.CARD, **kw)
             self._px = lambda v: int(round(v * uiscale))
             self.labels = dict(PV_LABELS)
@@ -1310,7 +1338,10 @@ if tk is not None:
             step = 1
             if pix > budget and budget > 0:
                 step = int(math.ceil(math.sqrt(pix / float(budget))))
-                step = max(1, min(8, step))
+                # 有 Pillow 时用 LANCZOS 放大，限制最多 2×2 降采样以保持清晰；
+                # 无 Pillow 时 tk.PhotoImage.zoom() 是最近邻，静态渲染直接全分辨率。
+                max_step = 2 if get_imagetk() is not None else 1
+                step = max(1, min(max_step, step))
             rw = max(8, int(math.ceil(W / float(step))))
             rh = max(8, int(math.ceil(H / float(step))))
             return rw, rh, step
@@ -1340,16 +1371,16 @@ if tk is not None:
         def _adapt(self, dt, W, H):
             """实测每帧耗时，自动在“分辨率”与“帧率”之间找平衡。
 
-            降得比升得快：慢的时候一步砍掉大半（免得要好几轮才收敛），
-            快的时候慢慢加回去。
+            为了保证高清，降低时更保守（避免一步砍到太糊），
+            帧率富余时稳步提升分辨率。
             """
             if dt > 0.25:
-                self._budget = max(self.MIN_PX, int(self._budget * 0.35))
-            elif dt > 0.10:
-                self._budget = max(self.MIN_PX, int(self._budget * 0.6))
-            elif dt < 0.035:
+                self._budget = max(self.MIN_PX, int(self._budget * 0.5))
+            elif dt > 0.12:
+                self._budget = max(self.MIN_PX, int(self._budget * 0.75))
+            elif dt < 0.03:
                 self._budget = min(self.MAX_PX, W * H,
-                                   int(self._budget * 1.4) + 2000)
+                                   int(self._budget * 1.5) + 5000)
 
         def _draw(self, dragging=False, fast=False):
             m = self.mesh
@@ -1438,7 +1469,8 @@ if tk is not None:
                 # Pillow 负责把低清图放大到画布尺寸（C 实现，几乎不耗时）
                 im = _PIL_Image.frombytes("RGB", (rw, rh), bytes(buf))
                 if (rw, rh) != (W, H):
-                    im = im.resize((W, H), _PIL_Image.BILINEAR)
+                  # LANCZOS 放大低清渲染结果，比 BILINEAR 更清晰、锯齿更少
+                    im = im.resize((W, H), _PIL_Image.LANCZOS)
                 photo = itk.PhotoImage(im)
             else:
                 photo = tk.PhotoImage(data=buf_to_ppm(buf, rw, rh))
@@ -1607,6 +1639,7 @@ class Rasterizer(object):
         self.frgb = mesh.face_rgb
         self.ftex = getattr(mesh, "face_tex", None)
         self.fcol = getattr(mesh, "face_col", None)
+        self.falpha = getattr(mesh, "face_alpha", None)
         self.uv = mesh.uv
 
         ntri = len(mesh.tris)
@@ -1630,6 +1663,7 @@ class Rasterizer(object):
         frgb = self.frgb
         ftex = self.ftex
         fcol = self.fcol
+        falpha = self.falpha
         uv = self.uv
         nuv = len(uv)
         tris = self.mesh.tris
@@ -1698,6 +1732,14 @@ class Rasterizer(object):
             col = frgb[i] if i < len(frgb) else (200, 200, 200)
             tex = ftex[i] if (ftex and i < len(ftex)) else None
             base = fcol[i] if (fcol and i < len(fcol)) else col
+            # 材质自身的不透明度（PMX diffuse.a / VRM baseColorFactor.a）
+            fa = 255
+            if falpha is not None and i < len(falpha):
+                _fa = falpha[i]
+                if _fa < 1.0:
+                    fa = int(_fa * 255.0 + 0.5)
+                    if fa < ALPHA_CUT:
+                        continue            # 整面几乎全透明，直接跳过
             # 面法线（视图空间）→ 光照，整个面一个常量
             ux, uy, uz = bx - ax, by - ay, zb - za
             vx, vy, vz = cx - ax, cy - ay, zc - za
@@ -1720,27 +1762,52 @@ class Rasterizer(object):
 
             eab_r, ebc_r, eca_r = eab0, ebc0, eca0
             if tex is None:
-                for py in range(y0, y1 + 1):
-                    eab = eab_r
-                    ebc = ebc_r
-                    eca = eca_r
-                    row0 = py * W
-                    for px in range(x0, x1 + 1):
-                        if eab >= 0.0 and ebc >= 0.0 and eca >= 0.0:
-                            idx = row0 + px
-                            z = (ebc * za + eca * zb + eab * zc) * inv
-                            if z > zbuf[idx]:
-                                zbuf[idx] = z
-                                o = idx * 3
-                                buf[o] = cr0
-                                buf[o + 1] = cg0
-                                buf[o + 2] = cb0
-                        eab += eab_dx
-                        ebc += ebc_dx
-                        eca += eca_dx
-                    eab_r += eab_dy
-                    ebc_r += ebc_dy
-                    eca_r += eca_dy
+                if fa >= 250:
+                    for py in range(y0, y1 + 1):
+                        eab = eab_r
+                        ebc = ebc_r
+                        eca = eca_r
+                        row0 = py * W
+                        for px in range(x0, x1 + 1):
+                            if eab >= 0.0 and ebc >= 0.0 and eca >= 0.0:
+                                idx = row0 + px
+                                z = (ebc * za + eca * zb + eab * zc) * inv
+                                if z > zbuf[idx]:
+                                    zbuf[idx] = z
+                                    o = idx * 3
+                                    buf[o] = cr0
+                                    buf[o + 1] = cg0
+                                    buf[o + 2] = cb0
+                            eab += eab_dx
+                            ebc += ebc_dx
+                            eca += eca_dx
+                        eab_r += eab_dy
+                        ebc_r += ebc_dy
+                        eca_r += eca_dy
+                else:
+                    # 材质半透明（无贴图）：与已经画上去的底层混合
+                    ia = 255 - fa
+                    for py in range(y0, y1 + 1):
+                        eab = eab_r
+                        ebc = ebc_r
+                        eca = eca_r
+                        row0 = py * W
+                        for px in range(x0, x1 + 1):
+                            if eab >= 0.0 and ebc >= 0.0 and eca >= 0.0:
+                                idx = row0 + px
+                                z = (ebc * za + eca * zb + eab * zc) * inv
+                                if z > zbuf[idx]:
+                                    zbuf[idx] = z
+                                    o = idx * 3
+                                    buf[o] = (cr0 * fa + buf[o] * ia) // 255
+                                    buf[o + 1] = (cg0 * fa + buf[o + 1] * ia) // 255
+                                    buf[o + 2] = (cb0 * fa + buf[o + 2] * ia) // 255
+                            eab += eab_dx
+                            ebc += ebc_dx
+                            eca += eca_dx
+                        eab_r += eab_dy
+                        ebc_r += ebc_dy
+                        eca_r += eca_dy
             else:
                 # UV 也用增量步进，避免每个像素再做一遍重心插值
                 u_r = (ebc0 * ua + eca0 * ub + eab0 * uc) * inv
@@ -1761,7 +1828,6 @@ class Rasterizer(object):
                             idx = row0 + px
                             z = (ebc * za + eca * zb + eab * zc) * inv
                             if z > zbuf[idx]:
-                                zbuf[idx] = z
                                 uu = u
                                 if uu >= 1.0:
                                     uu -= int(uu)
@@ -1779,10 +1845,28 @@ class Rasterizer(object):
                                 if yi >= th:
                                     yi = th - 1
                                 o2 = (yi * tw + xi) << 2
-                                o = idx * 3
-                                buf[o] = (cr0 * tp[o2]) // 255
-                                buf[o + 1] = (cg0 * tp[o2 + 1]) // 255
-                                buf[o + 2] = (cb0 * tp[o2 + 2]) // 255
+                                # 贴图 alpha：低于阈值整块丢弃（露出后面的面），
+                                # 中间值按 alpha 与底层混合。丢弃时不写 z，
+                                # 于是后面的层仍然能画出来 —— 蕾丝/发梢的镂空才对。
+                                ta = tp[o2 + 3]
+                                if ta:
+                                    if fa != 255:
+                                        ta = (ta * fa) // 255
+                                    if ta >= ALPHA_CUT:
+                                        o = idx * 3
+                                        if ta >= 250:
+                                            buf[o] = (cr0 * tp[o2]) // 255
+                                            buf[o + 1] = (cg0 * tp[o2 + 1]) // 255
+                                            buf[o + 2] = (cb0 * tp[o2 + 2]) // 255
+                                        else:
+                                            ia = 255 - ta
+                                            buf[o] = ((cr0 * tp[o2] // 255) * ta
+                                                      + buf[o] * ia) // 255
+                                            buf[o + 1] = ((cg0 * tp[o2 + 1] // 255) * ta
+                                                          + buf[o + 1] * ia) // 255
+                                            buf[o + 2] = ((cb0 * tp[o2 + 2] // 255) * ta
+                                                          + buf[o + 2] * ia) // 255
+                                        zbuf[idx] = z
                         eab += eab_dx
                         ebc += ebc_dx
                         eca += eca_dx

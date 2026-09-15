@@ -4,6 +4,8 @@
 不需要 Blender / Autodesk FBX SDK / Unity 3D，也不需要 mmd_tools / UniVRM 等插件。直接读写二进制格式，拖进窗口即可转换。
 
 [English](README.md) | [简体中文](README_SC.md) | [繁體中文](README_TC.md) | [日本語](README_JP.md)
+
+![Preview](Document\Preview-sc.jpg)
 ---
 
 ## 下载
@@ -228,9 +230,10 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 2. **设置文件 `config.json`**：记录语言、界面缩放、任务方向、各选项等，删除后会以默认值重建。
 1. **快捷键与交互**：预览区可拖动旋转、滚轮缩放；拖放区点击可打开文件选择框。
 
-### 模型全黑 / 镂空
+### 模型全黑 / 黑边 / 镂空
 
-- **转换后模型全黑**：在 MMD / PMXEditor 里选中全部材质**关掉轮廓线**，再勾选**「双面描绘」**。
+- **转换后模型边缘有黑色线条**：本工具默认会在输出 PMX 时关闭 MMD 轮廓线（顶点 edge=0、材质 edge_size=0、edge_color alpha=0）。
+  若仍看到黑边，请在 MMD / PMXEditor 里选中全部材质，确认**轮廓线已关闭**并勾选**「双面描绘」**。
 - **仍有镂空**：先看日志里 `绕序自动判定` 那行。判定错了加 `--flip-winding`；薄片几何（头发 / 裙摆）依赖双面渲染则加 `--force-double-sided`，或勾选界面的「材质强制双面」。
 
 ### 已知限制

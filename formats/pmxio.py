@@ -708,3 +708,25 @@ def new_model(name="Model"):
         "bones": [], "morphs": [], "frames": [],
         "rigid_bodies": [], "joints": [],
     }
+
+
+def strip_edges(model, force_double_sided=True):
+    """去除 PMX 的黑色轮廓线（MMD 轮廓线 / edge line）。
+
+    对输出到 MMD 后常见的“模型边缘出现黑边”问题，把材质的轮廓线标记、
+    粗细、颜色 alpha 全部关闭，并把每个顶点的 edge 系数置 0。
+    可选同时强制开启双面描绘，减少因背面剔除产生的黑缝/镂空。
+    """
+    for v in model.get("vertices", []):
+        v["edge"] = 0.0
+    for mm in model.get("materials", []):
+        mm["flag"] = (mm.get("flag", 0x0F) & ~0x10)
+        if force_double_sided:
+            mm["flag"] |= 0x01
+        mm["edge_size"] = 0.0
+        ec = list(mm.get("edge_color") or (0.0, 0.0, 0.0, 1.0))
+        while len(ec) < 4:
+            ec.append(1.0)
+        ec[3] = 0.0
+        mm["edge_color"] = tuple(ec)
+    return model

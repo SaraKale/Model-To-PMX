@@ -5,6 +5,8 @@ No Blender / Autodesk FBX SDK / Unity 3D required, and no plugins such as mmd_to
 It reads and writes the binary formats directly — just drag a file into the window to convert.
 
 [English](README.md) | [简体中文](README_SC.md) | [繁體中文](README_TC.md) | [日本語](README_JP.md)
+
+![Preview](Document\Preview-en.jpg)
 ---
 
 ## Download
@@ -232,9 +234,9 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 2. **Settings file `config.json`**: Stores language, UI zoom, task direction, and each option; it is recreated with defaults if deleted.
 1. **Shortcuts & interaction**: The preview area supports drag-to-rotate and scroll-to-zoom; clicking the drop area opens a file picker.
 
-### Model all-black / holes
+### Model all-black / black outline / holes
 
-- **Model is all black after conversion**: In MMD / PMXEditor, select all materials and **turn off the outline**, then check **"Double-sided drawing"**.
+- **Black lines on model edges after conversion**: The converter now disables the MMD outline by default (vertex edge=0, material edge_size=0, edge_color alpha=0). If you still see black edges, open the model in MMD / PMXEditor, make sure the **outline is turned off** for all materials, and check **"Double-sided drawing"**.
 - **Still has holes**: First look at the `绕序自动判定` (auto winding-order detection) line in the log. If it's wrong, add `--flip-winding`; if thin geometry (hair / skirt) relies on double-sided rendering, add `--force-double-sided`, or check "Force double-sided materials" in the UI.
 
 ### Known limitations
