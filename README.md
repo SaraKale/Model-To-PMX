@@ -6,7 +6,7 @@ It reads and writes the binary formats directly — just drag a file into the wi
 
 [English](README.md) | [简体中文](README_SC.md) | [繁體中文](README_TC.md) | [日本語](README_JP.md)
 
-![Preview](Document\Preview-en.jpg)
+![Preview](Document/Preview-en.jpg)
 ---
 
 ## Download

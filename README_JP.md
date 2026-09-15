@@ -6,7 +6,7 @@ Blender / Autodesk FBX SDK / Unity 3D は不要、mmd_tools / UniVRM といっ�
 
 [English](README.md) | [简体中文](README_SC.md) | [繁體中文](README_TC.md) | [日本語](README_JP.md)
 
-![Preview](Document\Preview-jp.jpg)
+![Preview](Document/Preview-jp.jpg)
 ---
 
 ## ダウンロード

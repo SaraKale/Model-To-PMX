@@ -5,7 +5,7 @@
 
 [English](README.md) | [簡體中文](README_SC.md) | [繁體中文](README_TC.md) | [日本語](README_JP.md)
 
-![Preview](Document\Preview-tc.jpg)
+![Preview](Document/Preview-tc.jpg)
 ---
 
 ## 下載
