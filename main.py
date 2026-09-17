@@ -82,7 +82,7 @@ F_ICON = (FONT, 26)
 F_MONO = ("Consolas", 9)
 
 SETTINGS_PATH = os.path.join(BASE, "config.json")
-PREVIEW_BASE = 320
+PREVIEW_BASE = 480
 
 # ---- 界面缩放 --------------------------------------------------------------
 # 所有像素尺寸都过 px()，字体的点值则由 tk scaling 统一放大。
@@ -877,7 +877,7 @@ class ConverterApp:
         # 右侧要放整条预览栏，窗口下限宽度得留够
         w = max(px(920), min(px(1240), r.winfo_screenwidth() - px(60)))
         h = max(px(600), min(px(800), r.winfo_screenheight() - px(100)))
-        r.geometry("%dx%d" % (w, h))
+        r.geometry("%dx%d" % (1280, 1400))	# 初始窗口大小
         r.minsize(min(px(860), w), min(px(560), h))
 
         outer = tk.Frame(r, bg=BG)

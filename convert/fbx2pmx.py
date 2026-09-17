@@ -97,6 +97,37 @@ def parse_matrix_str(s):
     return vals if len(vals) == 16 else m_ident()
 
 
+def m_rot(rot_deg):
+    """欧拉角（度）→ 纯旋转矩阵，与 m_trs 同一套约定（行向量、Rz·Ry·Rx）。
+
+    注意不要改成 Rx·Ry·Rz：实测同一份 FBX 下两种顺序的贴合度差距极大
+    （Rz·Ry·Rx 中位 5.67cm vs Rx·Ry·Rz 中位 18.09cm），当前这个才是对的。
+    """
+    return m_trs([0.0, 0.0, 0.0], rot_deg, [1.0, 1.0, 1.0])
+
+
+def m_rot_inv(rot_deg):
+    """纯旋转矩阵的逆（3×3 转置）。FBX 里的 Rpost⁻¹ / Rp⁻¹ 需要它。"""
+    r = m_rot(rot_deg)
+    o = list(r)
+    for i in range(3):
+        for j in range(3):
+            o[j * 4 + i] = r[i * 4 + j]
+    return o
+
+
+def m_translate(v):
+    m = m_ident()
+    m[3], m[7], m[11] = v
+    return m
+
+
+def m_scale(s):
+    m = m_ident()
+    m[0], m[5], m[10] = s
+    return m
+
+
 # ------------------------------------------------------------- fbx scene ----
 
 class Model:
@@ -152,12 +183,57 @@ class Scene:
         return out
 
     def _local_matrix(self, node):
+        """节点局部矩阵，按 FBX SDK 的 EvaluateLocalTransform 完整合成：
+
+            T · Roff · Rp · Rpre · R · Rpost⁻¹ · Rp⁻¹ · Soff · Sp · S · Sp⁻¹
+
+        这里最容易漏掉的是 **PreRotation**，而且漏了不会立刻露馅：节点自身的
+        平移在这个式子最左边，不受自己 PreRotation 影响，所以单看一根骨骼的
+        位置是正常的；但它的**所有后代**都活在少了一个 Rpre 的坐标系里，整条
+        骨链会歪掉/翻转。实测 "Crimson Rumor" 这个包 385 个节点里有 185 个带
+        非零 PreRotation（不少正好是 180°），漏掉它会让 83% 的骨骼偏位（最大
+        106cm）——衣服/发饰的骨链会从"垂在身侧"变成"横着翘到体外"，看起来就像
+        骨骼被倒过来了。
+        判据（顶点到其主骨骼线段的距离，越小越贴合）：
+            只 T·R·S：中位 11.99cm / 平均 20.92cm
+            带 PreRotation：中位  5.67cm / 平均  6.12cm
+        """
         d = self._props70(node)
-        t = d.get("Lcl Translation", [0.0, 0.0, 0.0])
-        r = d.get("Lcl Rotation", [0.0, 0.0, 0.0])
-        s = d.get("Lcl Scaling", [1.0, 1.0, 1.0])
-        return m_trs([float(v) for v in t[:3]], [float(v) for v in r[:3]],
-                     [float(v) for v in s[:3]])
+
+        def v3(key):
+            v = d.get(key)
+            return [float(x) for x in v[:3]] if v else None
+
+        t = v3("Lcl Translation") or [0.0, 0.0, 0.0]
+        r = v3("Lcl Rotation") or [0.0, 0.0, 0.0]
+        s = v3("Lcl Scaling") or [1.0, 1.0, 1.0]
+        rp = v3("RotationPivot")
+        pre = v3("PreRotation")
+        post = v3("PostRotation")
+        roff = v3("RotationOffset")
+        sp = v3("ScalingPivot")
+        soff = v3("ScalingOffset")
+
+        m = m_translate(t)
+        if roff:
+            m = m_mul(m, m_translate(roff))
+        if rp:
+            m = m_mul(m, m_rot(rp))
+        if pre:
+            m = m_mul(m, m_rot(pre))
+        m = m_mul(m, m_rot(r))
+        if post:
+            m = m_mul(m, m_rot_inv(post))
+        if rp:
+            m = m_mul(m, m_rot_inv(rp))
+        if soff:
+            m = m_mul(m, m_translate(soff))
+        if sp:
+            m = m_mul(m, m_rot(sp))
+        m = m_mul(m, m_scale(s))
+        if sp:
+            m = m_mul(m, m_rot_inv(sp))
+        return m
 
     def _build_models(self):
         self.models = {}
@@ -1222,7 +1298,8 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
             for _, wt in wl:
                 pw.f32(wt)
             wsum = 1.0
-        pw.f32(wsum)
+        # 顶点 edge scale：写 0 去除 MMD 的黑色轮廓线
+        pw.f32(0.0)
 
     # faces
     pw.i32(nt * 3)
@@ -1254,8 +1331,9 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
         pw.f32(0.0); pw.f32(0.0); pw.f32(0.0)          # specular
         pw.f32(0.0)                                     # shininess
         pw.f32(0.5); pw.f32(0.5); pw.f32(0.5)          # ambient (按需求默认 0.5 0.5 0.5)
-        pw.buf += bytes([0x01 | 0x02 | 0x04])           # double-sided + shadows
-        pw.f32(0.0); pw.f32(0.0); pw.f32(0.0); pw.f32(1.0)   # edge colour
+        # 关闭轮廓线（0x10），保留双面+地面阴影+自身阴影贴图
+        pw.buf += bytes([0x01 | 0x02 | 0x04])
+        pw.f32(0.0); pw.f32(0.0); pw.f32(0.0); pw.f32(0.0)   # edge colour（alpha=0 彻底去黑边）
         pw.f32(0.0)                                     # edge size
         tex_idx = tex_index_of_mat.get(mat_node_id, -1) if mat_node_id else -1
         pw.idx(tex_idx, ti_size)                        # texture
