@@ -56,12 +56,18 @@ class _R:
         self.d = d
         self.p = 0
         self.enc = 1
+        # 当前解析到的段落/条目，仅用于出错时给出能定位的信息
+        self.sec = "头部"
+
+    def _fail(self, what):
+        return "PMX 解析错位（段落：%s）：" % self.sec
 
     def _need(self, n, what):
         if self.p + n > len(self.d):
             raise ValueError(
-                "PMX 解析错位：读取「%s」时越过文件末尾（偏移 %d / 文件 %d 字节）。"
-                "多半是某一段的结构和写入方不一致，请反馈这个模型文件。"
+                self._fail(what)
+                + "读取「%s」时越过文件末尾（偏移 %d / 文件 %d 字节）。"
+                  "多半是某一段的结构和写入方不一致，请反馈这个模型文件。"
                 % (what, self.p, len(self.d)))
 
     def i32(self, what="int"):
@@ -87,7 +93,8 @@ class _R:
         n = self.i32(what)
         if n < 0 or self.p + n > len(self.d):
             raise ValueError(
-                "PMX 解析错位：「%s」长度 %d 超出文件剩余字节（偏移 %d / %d）。"
+                self._fail(what)
+                + "「%s」长度 %d 超出文件剩余字节（偏移 %d / %d）。"
                 % (what, n, self.p, len(self.d)))
         s = self.d[self.p:self.p + n]
         self.p += n
@@ -130,8 +137,10 @@ def read_pmx(path):
     m["comment_en"] = r.text()
 
     # ---- vertices
+    r.sec = "顶点"
     verts = []
-    for _ in range(r.i32()):
+    for vi_ in range(r.i32("vertex count")):
+        r.sec = "顶点[%d]" % vi_
         pos = (r.f32(), r.f32(), r.f32())
         nrm = (r.f32(), r.f32(), r.f32())
         uv = (r.f32(), r.f32())
@@ -155,14 +164,18 @@ def read_pmx(path):
     m["vertices"] = verts
 
     # ---- faces
+    r.sec = "面"
     m["faces"] = [r.idx(vi, signed=False) for _ in range(r.i32())]
 
     # ---- textures
+    r.sec = "贴图"
     m["textures"] = [r.text() for _ in range(r.i32())]
 
     # ---- materials
+    r.sec = "材质"
     mats = []
-    for _ in range(r.i32()):
+    for mi_ in range(r.i32("material count")):
+        r.sec = "材质[%d]" % mi_
         mm = {}
         mm["name"] = r.text()
         mm["name_en"] = r.text()
@@ -184,14 +197,17 @@ def read_pmx(path):
     m["materials"] = mats
 
     # ---- bones
+    r.sec = "骨骼"
     bones = []
-    for _ in range(r.i32()):
+    for bi_ in range(r.i32("bone count")):
+        r.sec = "骨骼[%d]" % bi_
         b = {}
         b["name"] = r.text()
         b["name_en"] = r.text()
         b["pos"] = (r.f32(), r.f32(), r.f32())
         b["parent"] = r.idx(bi)
         b["layer"] = r.i32()
+        r._need(2, "flag")
         flag = struct.unpack_from("<H", d, r.p)[0]
         r.p += 2
         b["flag"] = flag
@@ -236,10 +252,12 @@ def read_pmx(path):
     m["bones"] = bones
 
     # ---- morphs
+    r.sec = "表情"
     if _DBG:
         print("[dbg] morphs start p=%d" % r.p)
     morphs = []
-    for _ in range(r.i32()):
+    for mo_ in range(r.i32("morph count")):
+        r.sec = "表情[%d]" % mo_
         mo = {}
         mo["name"] = r.text()
         mo["name_en"] = r.text()
@@ -280,8 +298,10 @@ def read_pmx(path):
     m["morphs"] = morphs
 
     # ---- display frames
+    r.sec = "表示枠"
     frames = []
-    for _ in range(r.i32()):
+    for fr_ in range(r.i32("frame count")):
+        r.sec = "表示枠[%d]" % fr_
         if _DBG:
             print("[dbg] frame at p=%d" % r.p)
         fr = {}
@@ -298,15 +318,18 @@ def read_pmx(path):
     m["frames"] = frames
 
     # ---- rigid bodies
+    r.sec = "刚体"
     if _DBG:
         print("[dbg] after frames p=%d (nframes=%d)" % (r.p, len(frames)))
     rbs = []
-    for _ in range(r.i32()):
+    for rb_ in range(r.i32("rigid body count")):
+        r.sec = "刚体[%d]" % rb_
         rb = {}
         rb["name"] = r.text()
         rb["name_en"] = r.text()
         rb["bone"] = r.idx(bi)
         rb["group"] = r.u8()
+        r._need(2, "mask")
         rb["mask"] = struct.unpack_from("<H", d, r.p)[0]
         r.p += 2
         rb["shape"] = r.u8()
@@ -323,8 +346,10 @@ def read_pmx(path):
     m["rigid_bodies"] = rbs
 
     # ---- joints
+    r.sec = "关节"
     jts = []
-    for _ in range(r.i32()):
+    for jt_ in range(r.i32("joint count")):
+        r.sec = "关节[%d]" % jt_
         j = {}
         j["name"] = r.text()
         j["name_en"] = r.text()
@@ -348,15 +373,22 @@ def read_pmx(path):
     m["filesize"] = len(d)
 
     # PMX 2.1 在关节之后还有一段 SoftBody
-    if version >= 2.1:
-        r._need(4, "softbody count")
-        nsoft = r.i32("softbody count")
-        m["soft_bodies"] = nsoft
-        m["consumed"] = r.p
-        if nsoft:
-            raise ValueError(
-                "该模型是 PMX 2.1 且含 %d 个 SoftBody，本转换器暂不支持 SoftBody。"
-                % nsoft)
+    # 注意：float32 的 2.1 读回来是 2.0999999...，直接写 >= 2.1 永远不成立，
+    # 必须用容差比较（否则 PMX 2.1 文件末尾会剩 4 字节 SoftBody 计数读不到）。
+    if version > 2.05:
+        if r.p == len(d):
+            # 少数工具（如 MikuMikuDayo 的粒子 PMX）标着 2.1 却没写
+            # SoftBody 计数字段，容错当作 0 处理，别一棒子打死。
+            m["soft_bodies"] = 0
+        else:
+            r._need(4, "softbody count")
+            nsoft = r.i32("softbody count")
+            m["soft_bodies"] = nsoft
+            m["consumed"] = r.p
+            if nsoft:
+                raise ValueError(
+                    "该模型是 PMX 2.1 且含 %d 个 SoftBody，本转换器暂不支持 SoftBody。"
+                    % nsoft)
 
     if m["consumed"] != m["filesize"]:
         raise ValueError(
@@ -651,6 +683,10 @@ def write_pmx(model, path):
             w.f32(j["spring_move"][k])
         for k in range(3):
             w.f32(j["spring_rot"][k])
+
+    # PMX 2.1 需要写 SoftBody 计数（本转换器不支持 SoftBody，恒写 0）
+    if m.get("version", 2.0) > 2.05:
+        w.i32(0)
 
     with open(path, "wb") as f:
         f.write(w.buf)
