@@ -219,10 +219,17 @@ def read_pmx(path):
         b["local_axis"] = None
         b["external"] = None
         b["ik"] = None
-        if flag & 0x0100:
-            b["inherit_rot"] = (r.idx(bi), r.f32())
-        if flag & 0x0200:
-            b["inherit_mov"] = (r.idx(bi), r.f32())
+        if flag & 0x0100 or flag & 0x0200:
+            # PMX 仕様：付与親/付与率は「共通の 1 組」しか書かれない——
+            # 付与回転(0x0100)と付与移動(0x0200)が同時でも 1 組だけ。
+            # 按两个 flag 各读一遍会多读 6 字节，从第一根双付与骨开始整体错位
+            # （实测小食Taberu：センター flag=0x031E 只有一组 (3, 1.0)）。
+            gparent = r.idx(bi)
+            grate = r.f32()
+            if flag & 0x0100:
+                b["inherit_rot"] = (gparent, grate)
+            if flag & 0x0200:
+                b["inherit_mov"] = (gparent, grate)
         if flag & 0x0400:
             b["fixed_axis"] = (r.f32(), r.f32(), r.f32())
         if flag & 0x0800:
@@ -553,12 +560,16 @@ def write_pmx(model, path):
         else:
             for k in range(3):
                 w.f32(b["tail"][k])
-        if flag & 0x0100:
-            w.idx(b["inherit_rot"][0], bi)
-            w.f32(b["inherit_rot"][1])
-        if flag & 0x0200:
-            w.idx(b["inherit_mov"][0], bi)
-            w.f32(b["inherit_mov"][1])
+        if flag & 0x0100 or flag & 0x0200:
+            # 与读取侧同理：付与親/付与率只写共通的一组。
+            # 两个 flag 同开时两组值理应一致；万一不一致（旧版本写出的文件），
+            # 以回転付与为准，避免丢信息。
+            if flag & 0x0100:
+                gp, gr = b["inherit_rot"]
+            else:
+                gp, gr = b["inherit_mov"]
+            w.idx(gp, bi)
+            w.f32(gr)
         if flag & 0x0400:
             for k in range(3):
                 w.f32(b["fixed_axis"][k])
@@ -705,7 +716,11 @@ def detect_winding(positions, normals, faces, sample=4000):
       need_flip=True 表示按现在的顺序算出来的几何法线与顶点法线相反，
       应该交换后两个索引。
 
-    实测：PMX 与 glTF 都是「从外面看逆时针」，几何法线与顶点法线同向。
+    实测：PMX 与 glTF 的原始数据都是「从外面看逆时针」，几何法线与顶点法线同向。
+    注意（2026-09-18）：这只对「未经手性修正的原始数据」成立。
+    pmx2vrm / vrm2pmx 做镜面反射（改手性）之后，绕序会被颠倒，
+    所以转换器里的 auto 判定必须用「反射后的数据」重新投票，
+    那时会判「需要反转」——这是正确的，别因此改回不反转。
     以前硬编码「必须反转」是错的，会让模型在 MMD / VRM 查看器里被背面剔除，
     表现就是大面积镂空 + 轮廓线糊成一片黑。
     """

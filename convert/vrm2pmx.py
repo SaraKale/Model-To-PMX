@@ -2,7 +2,8 @@
 """vrm2pmx.py - 把 VRM（0.x / 1.0）转成 MMD 的 PMX 2.0，纯 Python 标准库。
 
 反向流程见 pmx2vrm.py 头部说明，坐标与绕序的处理互为逆操作：
-  * VRM 1.0 正面 +Z → PMX 正面 -Z，绕 Y 轴旋转 180°；VRM 0.x 不旋转。
+  * VRM（右手系）→ PMX（左手系）手性相反：1.0 取反 Z（脸 +Z → -Z），
+    0.x 取反 X（左手 -X → +X）；两种情况三角绕序都要反转。
   * glTF 逆时针为正面 → PMX 顺时针为正面，反转三角形缠绕顺序。
   * 米 → MMD 单位，默认把模型归一到 20 单位高（MMD 常规身高）。
 
@@ -79,10 +80,15 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
         _l("警告：没找到 VRM 扩展，按普通 glTF 处理", "warn")
     is1 = vrm1 is not None
 
-    # ---- 旋转 / 缩放
-    if rotate in ("auto", None, ""):
-        rotate = "y180" if is1 else "none"
-    y180 = (rotate == "y180")
+    # ---- 手性修正 / 缩放（2026-09-18 重写，别改回「绕 Y 旋转 180°」）
+    # VRM（glTF 右手系）→ PMX（DirectX 左手系）：同一组数字直接用是
+    # 镜像人形，必须反射一个轴：0.x 取反 x（脸 -Z、左手 -X → 左手 +X），
+    # 1.0 取反 z（脸 +Z、左手 +X → 脸 -Z、左手 +X）。
+    # y180 是纯旋转，改不了手性 → 转出的 PMX 左右翻转。
+    if rotate in ("auto", "y180", None, ""):      # y180 为旧值，视同 auto
+        mx, mz = (1.0, -1.0) if is1 else (-1.0, 1.0)
+    else:                                          # "none"
+        mx, mz = 1.0, 1.0
 
     nodes = gltf.get("nodes") or []
     worlds = vrmio.node_world_matrices(gltf)
@@ -105,10 +111,11 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
                           if "indices" in prim else None)
         return out
 
-    # ---- 缠绕顺序自动判定
-    # glTF 规范要求「从外面看逆时针」，实测 PMX 也是同一约定，所以正常
-    # 情况下不需要反转。以前硬编码 True 会让模型在 MMD 里被背面剔除
-    # （大面积镂空），轮廓线也会因为绕序反了糊成一片黑。
+    # ---- 缠绕顺序自动判定（必须用手性修正后的数据投票）
+    # VRM 的面「从外面看逆时针」（glTF 规范）；镜面反射会把它颠倒成
+    # 顺时针，所以正常情况下 auto 会判定为「需要反转」——反射后的
+    # 三角形必须反转绕序，MMD 里才是正确的正面。
+    # 以前硬编码 True / 不反射，分别对应「镂空黑面」与「左右翻转」。
     if reverse_winding in ("auto", None, ""):
         ag = dis = 0
         for mesh in meshes:
@@ -123,8 +130,9 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
                 if idx is None:
                     idx = list(range(nn))
                 _, a2, d2 = pmxio.detect_winding(
-                    [(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]) for i in range(nn)],
-                    [(nv[i * 3], nv[i * 3 + 1], nv[i * 3 + 2])
+                    [(p[i * 3] * mx, p[i * 3 + 1], p[i * 3 + 2] * mz)
+                     for i in range(nn)],
+                    [(nv[i * 3] * mx, nv[i * 3 + 1], nv[i * 3 + 2] * mz)
                      for i in range(nn)],
                     idx, sample=1500)
                 ag += a2
@@ -222,15 +230,14 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
 
     def xf(p):
         x, y, z = p
-        if y180:
-            x, z = -x, -z
-        return (x * scale, y * scale, z * scale)
+        return (x * mx * scale, y * scale, z * mz * scale)
 
     _l("VRM：%s · 节点 %d · 网格 %d · 蒙皮 %d"
        % ("1.0" if is1 else ("0.x" if vrm0 else "无扩展"), len(nodes),
           len(meshes), len(skins)))
-    _l("缩放 %.4f（米 → MMD 单位）· 朝向 %s · 绕序%s"
-       % (scale, "旋转 180°" if y180 else "保持不变",
+    _l("缩放 %.4f（米 → MMD 单位）· 手性修正 %s · 绕序%s"
+       % (scale,
+          ("z 取反" if is1 else "x 取反") if (mx, mz) != (1.0, 1.0) else "无",
           "反转" if reverse_winding else "保持不变"))
 
     # ---- 骨骼 → PMX
@@ -376,7 +383,7 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
                         nv = (m[0] * nv[0] + m[1] * nv[1] + m[2] * nv[2],
                               m[4] * nv[0] + m[5] * nv[1] + m[6] * nv[2],
                               m[8] * nv[0] + m[9] * nv[1] + m[10] * nv[2])
-                    nv = xf(nv) if y180 else nv
+                    nv = (nv[0] * mx, nv[1], nv[2] * mz)
                     ln = (nv[0] ** 2 + nv[1] ** 2 + nv[2] ** 2) ** 0.5 or 1.0
                     N = (nv[0] / ln, nv[1] / ln, nv[2] / ln)
                 else:
@@ -528,10 +535,10 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
                         g = pv["l2g"][lv]
                         ox, oy, oz = out.get(g, (0.0, 0.0, 0.0))
                         out[g] = (ox + d[0] * w, oy + d[1] * w, oz + d[2] * w)
-        # 坐标变换（只旋转 + 缩放，不含平移）
-        sx = (-1.0 if y180 else 1.0) * scale
+        # 坐标变换（手性反射 + 缩放，不含平移）
+        sx = mx * scale
         sy = scale
-        sz = (-1.0 if y180 else 1.0) * scale
+        sz = mz * scale
         return {g: (d[0] * sx, d[1] * sy, d[2] * sz) for g, d in out.items()}
 
     if is1:
@@ -547,9 +554,9 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
                       collect_binds(grp.get("binds"), 0.01))
 
     # 没被任何 expression 用到的 target，按 targetNames 补上
-    sx = (-1.0 if y180 else 1.0) * scale
+    sx = mx * scale
     sy = scale
-    sz = (-1.0 if y180 else 1.0) * scale
+    sz = mz * scale
     for mesh_i, mesh in enumerate(meshes):
         names = ((mesh.get("extras") or {}).get("targetNames") or [])
         for prim_i, prim in enumerate(mesh.get("primitives") or []):

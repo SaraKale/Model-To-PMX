@@ -162,9 +162,9 @@ def read_pmx(path):
         #   0x0002 rotatable  0x0004 movable  0x0008 visible  0x0010 operable
         #   0x0020 IK         0x0100 inherit-rot 0x0200 inherit-trans
         #   0x0400 fixed axis 0x0800 local axis  0x2000 external parent
-        if bflag & 0x0100:
-            r.idx(bi_s); r.f32()
-        if bflag & 0x0200:
+        # 付与親/付与率是回転・移動共通的一组：任一 flag 置位只读一次，
+        # 读两遍会多走 6 字节，从第一根双付与骨（如センター 0x031E）开始错位。
+        if bflag & 0x0100 or bflag & 0x0200:
             r.idx(bi_s); r.f32()
         if bflag & 0x0400:
             r.f32(); r.f32(); r.f32()

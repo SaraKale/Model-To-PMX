@@ -3,15 +3,16 @@
 
 不需要 Blender、不需要 mmd_tools、不需要 Unity。
 
-坐标约定
+坐标约定（数值均指文件里存的原始数字）
 --------
-PMX（MMD）   正面 -Z，角色右手侧 +X，Y 向上，正面为顺时针缠绕
-VRM 0.x      正面 -Z，角色右手侧 +X，Y 向上（glTF 右手系、逆时针为正面）
+PMX（MMD）   正面 -Z，角色左手侧 +X，Y 向上（DirectX 左手系，逆时针缠绕）
+VRM 0.x      正面 -Z，角色左手侧 -X，Y 向上（glTF 右手系、逆时针为正面）
 VRM 1.0      正面 +Z，角色左手侧 +X，Y 向上
 
 所以：
-  * 转 0.x 坐标原样搬运；转 1.0 绕 Y 轴旋转 180°。
-  * 两种情况都要反转三角形缠绕顺序（PMX 顺时针 → glTF 逆时针）。
+  * PMX（DirectX 左手系）与 glTF（右手系）手性相反：同一组数字直接
+    解释是镜像人形，必须反射一个轴——转 0.x 取反 X；转 1.0 取反 Z。
+  * 两种情况三角绕序都要反转（反射把「外面看逆时针」颠倒了）。
   * 尺寸：MMD 模型约 20 单位高，VRM 用米，默认按 1.6 m 归一。
 
 用法：
@@ -226,9 +227,12 @@ def convert(pmx_path, vrm_path, spec="1.0", scale_mode="auto",
         "auto"（默认）——用「几何面法线 vs 顶点法线」投票自动判定；
         True / False   ——手动强制反转 / 不反转。
 
-    实测 PMX 与 glTF 的缠绕约定一致（从外面看都是逆时针），
-    所以正常情况下 auto 会判定为「不反转」。以前硬编码 True 会让模型
-    被背面剔除，表现就是大面积镂空 + 轮廓线糊成黑色。
+    手性说明（2026-09-18 重写）：PMX（MMD / DirectX 左手系）数值上
+    脸朝 -Z、左手在 +X；同一组数字按 glTF 右手系直接解释是镜像人形，
+    必须做一次镜面反射（0.x 取反 x；1.0 取反 z）。反射会把
+    「从外面看逆时针」颠倒成顺时针，所以 auto 绕序判定（用反射后的
+    数据投票）正常会判「反转」。以前不做反射（或用 y180 纯旋转，
+    旋转改不了手性）会让转出的模型左右翻转。
     """
 
     def _log(msg, tag=None):
@@ -246,17 +250,6 @@ def convert(pmx_path, vrm_path, spec="1.0", scale_mode="auto",
     materials = model["materials"]
     is1 = str(spec).startswith("1")
 
-    # ---- 缠绕顺序自动判定（PMX 与 glTF 约定一致，通常不需要反转）
-    if reverse_winding in ("auto", None, ""):
-        flip, ag, dis = pmxio.detect_winding(
-            [v["pos"] for v in verts],
-            [v["normal"] for v in verts], faces)
-        reverse_winding = bool(flip)
-        _log("绕序自动判定：与法线同向 %d 面 / 反向 %d 面 → %s"
-             % (ag, dis, "需要反转" if flip else "保持不变"))
-    else:
-        reverse_winding = bool(reverse_winding)
-
     # ---- 缩放
     if scale_mode in ("auto", "mmd", None, ""):
         ys = [v["pos"][1] for v in verts] or [0.0]
@@ -265,33 +258,51 @@ def convert(pmx_path, vrm_path, spec="1.0", scale_mode="auto",
     else:
         scale = float(scale_mode)
 
-    # ---- 旋转
-    if rotate in ("auto", None, ""):
-        rotate = "y180" if is1 else "none"
-    y180 = (rotate == "y180")
+    # ---- 手性修正（2026-09-18 重写，别改回「绕 Y 旋转 180°」）
+    # PMX（左手系）数值：脸 -Z、左手 +X（实测小食Taberu：
+    # 両目 Z=-0.75，左腕 X=+1.34 / 右腕 X=-1.34）。
+    # glTF（右手系）里合法人形：脸 -Z ⇒ 左手 -X；脸 +Z ⇒ 左手 +X。
+    # 所以必须反射一个轴：0.x（脸 -Z）取反 x；1.0（脸 +Z）取反 z。
+    # y180 是纯旋转，改不了手性 → 转出的 VRM 左右翻转（实测 Blender 可见）。
+    # rotate="none" 仅用于调试（原样输出，左右是反的）。
+    if rotate in ("auto", "y180", None, ""):      # y180 为旧值，视同 auto
+        mx, mz = (1.0, -1.0) if is1 else (-1.0, 1.0)
+    else:                                          # "none"
+        mx, mz = 1.0, 1.0
 
     def xf(p):
         x, y, z = p
-        if y180:
-            x, z = -x, -z
-        return (x * scale, y * scale, z * scale)
+        return (x * mx * scale, y * scale, z * mz * scale)
 
     def xf_dir(p):
         x, y, z = p
-        if y180:
-            x, z = -x, -z
-        return (x, y, z)
+        return (x * mx, y, z * mz)
 
     def unit(left_amount, up_amount, front_amount):
         if is1:                       # VRM 1.0：左 +X、前 +Z
             return (left_amount, up_amount, front_amount)
         return (-left_amount, up_amount, -front_amount)
 
+    # ---- 缠绕顺序自动判定：必须用「镜像后」的数据投票。
+    # 镜像反射会把「从外面看逆时针」颠倒成顺时针，所以正常情况下
+    # auto 在这里会判定为「需要反转」——这不是回到老 bug，
+    # 老 bug 是「没有反射时硬编码反转」。
+    if reverse_winding in ("auto", None, ""):
+        flip, ag, dis = pmxio.detect_winding(
+            [xf(v["pos"]) for v in verts],
+            [xf_dir(v["normal"]) for v in verts], faces)
+        reverse_winding = bool(flip)
+        _log("绕序自动判定（手性修正后）：与法线同向 %d 面 / 反向 %d 面 → %s"
+             % (ag, dis, "需要反转" if flip else "保持不变"))
+    else:
+        reverse_winding = bool(reverse_winding)
+
     _log("PMX：顶点 %d · 三角面 %d · 骨骼 %d · 材质 %d · 表情 %d"
          % (len(verts), len(faces) // 3, len(bones), len(materials),
             len(model["morphs"])))
-    _log("缩放 %.5f（MMD 单位 → 米）· 朝向 %s · 绕序%s"
-         % (scale, "旋转 180°" if y180 else "保持不变",
+    _log("缩放 %.5f（MMD 单位 → 米）· 手性修正 %s · 绕序%s"
+         % (scale,
+            ("z 取反" if is1 else "x 取反") if (mx, mz) != (1.0, 1.0) else "无",
             "反转" if reverse_winding else "保持不变"))
 
     # ---- 骨骼 → glTF 节点
@@ -430,8 +441,12 @@ def convert(pmx_path, vrm_path, spec="1.0", scale_mode="auto",
                       for k in range(4)]
                 if sum(x[1] for x in wl) <= 1e-9:
                     wl = [(bs[0], 1.0), (bs[0], 0.0), (bs[0], 0.0), (bs[0], 0.0)]
-            wl = [(bone_node(b) if bone_node(b) is not None else 0, w)
-                  for b, w in wl]
+            # JOINTS_0 的值是「skin.joints 数组的下标」，不是 glTF 节点号！
+            # 我们的 joints 数组按 PMX 骨序排（joints[i] = 第 i 根骨的节点），
+            # 所以这里直接写 PMX 骨索引 b。以前错写成节点号 bone_node(b)，
+            # 拓扑排序一旦重排骨骼（remap 非恒等）权重就整体串位——
+            # 症状是 Blender 里动某根骨头、别处的顶点跟着跑。
+            wl = [(b, w) for b, w in wl]
             tot = sum(w for _, w in wl) or 1.0
             wl = [(b, w / tot) for b, w in wl]
             while len(wl) < 4:
