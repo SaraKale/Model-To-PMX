@@ -49,6 +49,67 @@ def _accessor_of(prim_or_target, name):
     return prim_or_target.get(name)
 
 
+# ---- 列主序 4x4 仿射矩阵工具（glTF 的 matrix / IBM 都是这个布局）----
+_M4_I = (1.0, 0.0, 0.0, 0.0,
+         0.0, 1.0, 0.0, 0.0,
+         0.0, 0.0, 1.0, 0.0,
+         0.0, 0.0, 0.0, 1.0)
+
+
+def _m4_mul(a, b):
+    """a·b，列主序。"""
+    o = [0.0] * 16
+    for c in range(4):
+        for r in range(4):
+            o[c * 4 + r] = (a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] +
+                            a[8 + r] * b[c * 4 + 2] +
+                            a[12 + r] * b[c * 4 + 3])
+    return o
+
+
+def _m4_inv(m):
+    """4x4 求逆（Gauss-Jordan，部分主元），列主序进出。"""
+    a = [[m[c * 4 + r] for c in range(4)] +
+         [1.0 if r == c else 0.0 for c in range(4)]
+         for r in range(4)]
+    for col in range(4):
+        piv = max(range(col, 4), key=lambda r: abs(a[r][col]))
+        if abs(a[piv][col]) < 1e-12:
+            return None
+        if piv != col:
+            a[col], a[piv] = a[piv], a[col]
+        d = a[col][col]
+        a[col] = [x / d for x in a[col]]
+        for r in range(4):
+            if r != col and a[r][col]:
+                f = a[r][col]
+                a[r] = [x - f * y for x, y in zip(a[r], a[col])]
+    return [a[r][4 + c] for c in range(4) for r in range(4)]
+
+
+def _m4_is_ident(m, eps=1e-6):
+    for c in range(4):
+        for r in range(4):
+            want = 1.0 if c == r else 0.0
+            if abs(m[c * 4 + r] - want) > eps:
+                return False
+    return True
+
+
+def _m4_apply(m, p):
+    x, y, z = p
+    return (m[0] * x + m[4] * y + m[8] * z + m[12],
+            m[1] * x + m[5] * y + m[9] * z + m[13],
+            m[2] * x + m[6] * y + m[10] * z + m[14])
+
+
+def _m3_apply(m, n):
+    x, y, z = n
+    return (m[0] * x + m[4] * y + m[8] * z,
+            m[1] * x + m[5] * y + m[9] * z,
+            m[2] * x + m[6] * y + m[10] * z)
+
+
 # ---------------------------------------------------------------- 主流程 --
 def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
             reverse_winding="auto", name=None, log=None, tex_dir=None,
@@ -205,22 +266,101 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
     for j in joint_list:
         joint_pos[j] = vrmio.world_translation(worlds[j])
 
-    # 包围盒（用骨骼 + 网格顶点粗算高度）
+    # ---- 每个 mesh 的「绑定姿势」变换（2026-09-18 加）
+    # glTF 蒙皮：顶点世界位置 = Σ w · W_j · IBM_j · v（W_j = 关节静止世界
+    # 矩阵）。规范文件 IBM_j = W_j⁻¹ → bind = W_j·IBM_j = 单位阵，顶点
+    # 不需要修正（零开销快路径）。
+    # 但不少导出器（UniGLTF 等）把顶点存在 mesh 节点的局部空间里，
+    # IBM 相应差了一个公共量——Blender/UniVRM 导入时会按 W_j·IBM_j 把
+    # 顶点摆到正确位置，直接读原始顶点就会整体错位（症状：身体零件
+    # 散开、头发束乱飞）。此时 bind = mesh 节点的世界矩阵，把顶点乘
+    # 回去即可。
+    def _mesh_node_of(mesh_i):
+        for nd_i, mi_ in mesh_of_node.items():
+            if mi_ == mesh_i:
+                return nd_i
+        return None
+
+    mesh_bind = {}
+    for mesh_i, mesh in enumerate(meshes):
+        node_i = _mesh_node_of(mesh_i)
+        skin = None
+        if node_i is not None and "skin" in nodes[node_i]:
+            skin = _get(gltf, "skins", nodes[node_i]["skin"])
+        bind_mats = None
+        if skin and skin.get("inverseBindMatrices") is not None:
+            joints_l = skin.get("joints") or []
+            ibm_flat = vrmio.read_accessor(
+                gltf, bin_data, skin["inverseBindMatrices"])
+            if ibm_flat and len(ibm_flat) >= 16 * len(joints_l):
+                bind_mats = []
+                all_ident = True
+                for i2, jn2 in enumerate(joints_l):
+                    wm = worlds[jn2] if 0 <= jn2 < len(worlds) else None
+                    if wm is None:
+                        bind_mats = None
+                        break
+                    # bind = W_j · IBM_j（注意：不是乘 IBM 的逆！
+                    # 蒙皮公式里 IBM 直接右乘顶点）
+                    bm = _m4_mul(wm, list(ibm_flat[i2 * 16:(i2 + 1) * 16]))
+                    bind_mats.append(bm)
+                    if not _m4_is_ident(bm):
+                        all_ident = False
+                if all_ident:
+                    bind_mats = None
+        mesh_bind[mesh_i] = bind_mats
+
+    # 包围盒（用骨骼 + 网格顶点粗算高度；顶点要先过绑定变换，
+    # 否则像 UniGLTF 这种 mesh 局部空间的文件会算出错误缩放）
     ymin = ymax = 0.0
     if joint_pos:
         ys = [p[1] for p in joint_pos.values()]
         ymin, ymax = min(ys), max(ys)
-    for m in meshes:
+    for mesh_i, m in enumerate(meshes):
+        bind = mesh_bind.get(mesh_i)
         for pr in m.get("primitives") or []:
-            acc = (pr.get("attributes") or {}).get("POSITION")
+            attrs = pr.get("attributes") or {}
+            acc = attrs.get("POSITION")
             if acc is None:
                 continue
             arr = vrmio.read_accessor(gltf, bin_data, acc)
             if not arr:
                 continue
-            yy = arr[1::3]
-            ymin = min(ymin, min(yy))
-            ymax = max(ymax, max(yy))
+            if bind is None:
+                yy = arr[1::3]
+                ymin = min(ymin, min(yy))
+                ymax = max(ymax, max(yy))
+                continue
+            jna = attrs.get("JOINTS_0")
+            wta = attrs.get("WEIGHTS_0")
+            jnv = vrmio.read_accessor(gltf, bin_data, jna) if jna is not None else None
+            wtv = vrmio.read_accessor(gltf, bin_data, wta) if wta is not None else None
+            nn = len(arr) // 3
+            for v in range(nn):
+                y = 0.0
+                wsum = 0.0
+                if jnv and wtv:
+                    for k in range(4):
+                        w = wtv[v * 4 + k] if len(wtv) > v * 4 + k else 0.0
+                        j = int(jnv[v * 4 + k]) if len(jnv) > v * 4 + k else 0
+                        if w > 1e-6 and 0 <= j < len(bind):
+                            bm = bind[j]
+                            x = arr[v * 3]
+                            z = arr[v * 3 + 2]
+                            y += w * (bm[1] * x + bm[5] * arr[v * 3 + 1] +
+                                      bm[9] * z + bm[13])
+                            wsum += w
+                if wsum > 1e-6:
+                    if y < ymin:
+                        ymin = y
+                    if y > ymax:
+                        ymax = y
+                else:
+                    y = arr[v * 3 + 1]
+                    if y < ymin:
+                        ymin = y
+                    if y > ymax:
+                        ymax = y
     height = ymax - ymin
 
     if scale_mode in ("auto", "mmd", None, ""):
@@ -337,16 +477,14 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
     prim_vertex_map = []    # 每个 primitive 的 local→global 列表
 
     for mesh_i, mesh in enumerate(meshes):
-        node_i = None
-        for n, m in mesh_of_node.items():
-            if m == mesh_i and node_i is None:
-                node_i = n
+        node_i = _mesh_node_of(mesh_i)
         skin = None
         if node_i is not None and "skin" in nodes[node_i]:
             skin = _get(gltf, "skins", nodes[node_i]["skin"])
         joint_nodes = [joint_slot.get(j, -1)
                        for j in ((skin or {}).get("joints") or [])]
         has_weights = bool(joint_nodes)
+        bind = mesh_bind.get(mesh_i)
 
         for prim_i, prim in enumerate(mesh.get("primitives") or []):
             arr = prim_arrays(prim)
@@ -372,18 +510,46 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
             l2g = []
             for v in range(n):
                 p = (pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2])
+                nv0 = ((nrm[v * 3], nrm[v * 3 + 1], nrm[v * 3 + 2])
+                       if nrm else None)
                 if m:
-                    p = (m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[12],
-                         m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[13],
-                         m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[14])
+                    p = _m4_apply(m, p)
+                    if nv0:
+                        nv0 = _m3_apply(m, nv0)
+                elif bind is not None and has_weights and jn and wt:
+                    # 绑定姿势修正：按权重混合各关节的 bind 矩阵
+                    bx = by = bz = 0.0
+                    b00 = b01 = b02 = b10 = b11 = b12 = 0.0
+                    b20 = b21 = b22 = 0.0
+                    btx = bty = btz = 0.0
+                    wsum = 0.0
+                    for k in range(4):
+                        w = wt[v * 4 + k] if len(wt) > v * 4 + k else 0.0
+                        j = int(jn[v * 4 + k]) if len(jn) > v * 4 + k else 0
+                        if w > 1e-6 and 0 <= j < len(bind):
+                            bm = bind[j]
+                            b00 += w * bm[0]; b01 += w * bm[4]
+                            b02 += w * bm[8]; b10 += w * bm[1]
+                            b11 += w * bm[5]; b12 += w * bm[9]
+                            b20 += w * bm[2]; b21 += w * bm[6]
+                            b22 += w * bm[10]
+                            btx += w * bm[12]; bty += w * bm[13]
+                            btz += w * bm[14]
+                            wsum += w
+                    if wsum > 1e-6:
+                        inv = 1.0 / wsum
+                        px, py, pz = p
+                        p = (b00 * px + b01 * py + b02 * pz + btx * inv,
+                             b10 * px + b11 * py + b12 * pz + bty * inv,
+                             b20 * px + b21 * py + b22 * pz + btz * inv)
+                        if nv0:
+                            nx = b00 * nv0[0] + b01 * nv0[1] + b02 * nv0[2]
+                            ny = b10 * nv0[0] + b11 * nv0[1] + b12 * nv0[2]
+                            nz = b20 * nv0[0] + b21 * nv0[1] + b22 * nv0[2]
+                            nv0 = (nx, ny, nz)
                 P = xf(p)
-                if nrm:
-                    nv = (nrm[v * 3], nrm[v * 3 + 1], nrm[v * 3 + 2])
-                    if m:
-                        nv = (m[0] * nv[0] + m[1] * nv[1] + m[2] * nv[2],
-                              m[4] * nv[0] + m[5] * nv[1] + m[6] * nv[2],
-                              m[8] * nv[0] + m[9] * nv[1] + m[10] * nv[2])
-                    nv = (nv[0] * mx, nv[1], nv[2] * mz)
+                if nv0:
+                    nv = (nv0[0] * mx, nv0[1], nv0[2] * mz)
                     ln = (nv[0] ** 2 + nv[1] ** 2 + nv[2] ** 2) ** 0.5 or 1.0
                     N = (nv[0] / ln, nv[1] / ln, nv[2] / ln)
                 else:
