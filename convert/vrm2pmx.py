@@ -475,6 +475,7 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
     pmx_materials = []
     target_slots = {}       # (mesh_i, prim_i, slot) → 全局顶点映射表
     prim_vertex_map = []    # 每个 primitive 的 local→global 列表
+    prim_ctx = {}           # (mesh_i, prim_i) → 表情增量要过的线性变换素材
 
     for mesh_i, mesh in enumerate(meshes):
         node_i = _mesh_node_of(mesh_i)
@@ -505,6 +506,10 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
                 m = worlds[node_i]
             else:
                 m = None
+            # glTF 的表情增量与 POSITION 处在同一个局部空间，所以必须过和顶点
+            # **完全一样**的线性变换（节点世界矩阵，或蒙皮时按权重混合的绑定矩阵
+            # 的线性部分）——平移项在「差值」里天然抵消，只用线性部分。
+            prim_ctx[(mesh_i, prim_i)] = (m, bind, jn, wt, has_weights)
 
             base = len(pmx_verts)
             l2g = []
@@ -633,6 +638,37 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
           len(pmx_textures)))
 
     # ---- 表情
+    # 表情增量 → PMX 偏移 = 该 primitive 的顶点线性变换 + 换轴/缩放。
+    # 缺了前一步，蒙皮顶点被绑定矩阵摆正过、增量却没摆正（UniGLTF 系 VRM 的
+    # mesh 局部空间），表情会朝错误方向/幅度动。标准 VRM 的 bind 是单位阵、
+    # 非蒙皮模型 m 也是 None，都走下面的快路径，输出与从前逐字节一致。
+    _ox_s, _oy_s, _oz_s = mx * scale, scale, mz * scale
+
+    def delta_lin(mesh_i, prim_i, lv, d):
+        ctx = prim_ctx.get((mesh_i, prim_i))
+        if ctx is not None:
+            m, bind, jn, wt, hw = ctx
+            if m is not None:
+                d = _m3_apply(m, d)
+            elif bind is not None and hw and jn and wt:
+                b00 = b01 = b02 = b10 = b11 = b12 = b20 = b21 = b22 = 0.0
+                wsum = 0.0
+                for k in range(4):
+                    w = wt[lv * 4 + k] if len(wt) > lv * 4 + k else 0.0
+                    j = int(jn[lv * 4 + k]) if len(jn) > lv * 4 + k else 0
+                    if w > 1e-6 and 0 <= j < len(bind):
+                        bm = bind[j]
+                        b00 += w * bm[0]; b01 += w * bm[4]; b02 += w * bm[8]
+                        b10 += w * bm[1]; b11 += w * bm[5]; b12 += w * bm[9]
+                        b20 += w * bm[2]; b21 += w * bm[6]; b22 += w * bm[10]
+                        wsum += w
+                if wsum > 1e-6:
+                    x, y, z = d
+                    d = ((b00 * x + b01 * y + b02 * z) / wsum,
+                         (b10 * x + b11 * y + b12 * z) / wsum,
+                         (b20 * x + b21 * y + b22 * z) / wsum)
+        return (d[0] * _ox_s, d[1] * _oy_s, d[2] * _oz_s)
+
     # 每个 primitive 的 morph target 读成 {local_vertex: (dx,dy,dz)}
     def target_delta(mesh_i, prim_i, slot):
         mesh = _get(gltf, "meshes", mesh_i)
@@ -684,6 +720,7 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
                     for lv, d in target_delta(mesh_i, pv["prim"], slot).items():
                         if lv >= len(pv["l2g"]):
                             continue
+                        d = delta_lin(mesh_i, pv["prim"], lv, d)
                         g = pv["l2g"][lv]
                         ox, oy, oz = out.get(g, (0.0, 0.0, 0.0))
                         out[g] = (ox + d[0] * w, oy + d[1] * w, oz + d[2] * w)
@@ -698,14 +735,11 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
                     for lv, d in target_delta(mesh_i, pv["prim"], slot).items():
                         if lv >= len(pv["l2g"]):
                             continue
+                        d = delta_lin(mesh_i, pv["prim"], lv, d)
                         g = pv["l2g"][lv]
                         ox, oy, oz = out.get(g, (0.0, 0.0, 0.0))
                         out[g] = (ox + d[0] * w, oy + d[1] * w, oz + d[2] * w)
-        # 坐标变换（手性反射 + 缩放，不含平移）
-        sx = mx * scale
-        sy = scale
-        sz = mz * scale
-        return {g: (d[0] * sx, d[1] * sy, d[2] * sz) for g, d in out.items()}
+        return out
 
     if is1:
         exprs = (vrm1.get("expressions") or {})
@@ -720,9 +754,6 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
                       collect_binds(grp.get("binds"), 0.01))
 
     # 没被任何 expression 用到的 target，按 targetNames 补上
-    sx = mx * scale
-    sy = scale
-    sz = mz * scale
     for mesh_i, mesh in enumerate(meshes):
         names = ((mesh.get("extras") or {}).get("targetNames") or [])
         for prim_i, prim in enumerate(mesh.get("primitives") or []):
@@ -738,7 +769,7 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
                     for lv, dd in target_delta(mesh_i, prim_i, slot).items():
                         if lv < len(pv["l2g"]):
                             g = pv["l2g"][lv]
-                            d[g] = (dd[0] * sx, dd[1] * sy, dd[2] * sz)
+                            d[g] = delta_lin(mesh_i, prim_i, lv, dd)
                 add_morph(nm, d)
     if pmx_morphs:
         _l("表情：%d 个（已转成 PMX 顶点表情）" % len(pmx_morphs))

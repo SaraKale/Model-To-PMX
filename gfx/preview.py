@@ -473,6 +473,13 @@ class Mesh:
                 tex = texs[bt] if 0 <= bt < len(texs) else {}
                 mc["tex"] = _mat_image(gltf, bin_data, tex.get("source"), img_cache)
             _resolve_face_colors(self, face_mat, mat_cache)
+        elif kind == "uemodel":
+            # 素材在 mesh_from_uemodel 时就取好了（Material 对象很小，不占内存），
+            # 这里只补做「找 MI_*.json → T_*.png 并把图片解码出来」这一步。
+            folder = st["folder"]
+            mats, n_tex = _uemodel_mats(folder, st["materials"],
+                                        with_textures=True)
+            _resolve_face_colors(self, st["face_mat"], mats)
         self._tex_state = None
         self.rev += 1
         return True
@@ -1001,10 +1008,130 @@ def mesh_from_unitypackage(path, log=None, with_textures=True):
     return mesh_from_fbx(fbxs[0], log=log, with_textures=with_textures)
 
 
+def _uemodel_mats(folder, materials, with_textures=True):
+    """uemodel 的材质 → 预览材质表（贴图靠同目录 MI_*.json 指路）。
+
+    uemodel 自身只存材质名、没有颜色/贴图，所以：
+      MI_<名>.json → Textures.MainTex → 同目录的 T_*.png，
+    找不到就退回中性灰。返回 (mats, 命中贴图数)。
+    """
+    idx = None
+    matmod = None
+    if with_textures:
+        try:
+            import uemodel2pmx
+            matmod = uemodel2pmx
+            idx = uemodel2pmx._FolderIndex(folder)
+        except Exception:
+            idx = None
+    mats = []
+    n_tex = 0
+    for mt in materials:
+        img = None
+        if idx is not None:
+            try:
+                src = matmod.find_material_texture(folder, mt, idx)
+                if src:
+                    with open(src, "rb") as f:
+                        img = load_image(f.read())
+                    if img is not None:
+                        n_tex += 1
+            except Exception:
+                img = None
+        mats.append({"color": (204, 204, 204), "tex": img, "alpha": 1.0,
+                     "name": mt.name or ""})
+    if not mats:
+        mats.append({"color": (204, 204, 204), "tex": None, "alpha": 1.0,
+                     "name": ""})
+    return mats, n_tex
+
+
+def mesh_from_uemodel(path, log=None, with_textures=True):
+    """UEFormat(.uemodel) → 预览网格。
+
+    坐标：UE 是左手系 Z-up、1 单位 = 1cm；预览和 PMX 一样按 Y-up 看，
+    所以用和 uemodel2pmx 同一套换轴 (x, y, z)_ue → (x, z, -y)。
+    预览会按包围盒自动缩放（fit = 0.46·min(W,H)/span），这里**不必**归一到
+    MMD 的 20 单位，否则只会白算一遍。
+
+    绕序：UE 的索引绕序与 PMX 相反，但光栅器内部会把 area2 归一到正号
+    （无背面剔除），所以这里原样搬过来即可。
+    """
+    import uemodelio
+    m = uemodelio.read_uemodel(path)
+    if not m.lods:
+        raise ValueError("这个 .uemodel 里没有 LOD 数据")
+    lod = m.lods[0]
+    folder = os.path.dirname(os.path.abspath(path))
+    mesh = Mesh(os.path.splitext(os.path.basename(path))[0])
+
+    def xf(p):
+        return (p[0], p[2], -p[1])
+
+    mats, n_tex = _uemodel_mats(folder, lod.materials, with_textures)
+    mesh.materials = mats
+    if log:
+        log("uemodel v%d：顶点 %d · 三角面 %d · 骨骼 %d · 材质 %d（贴图 %d）"
+            % (m.version, len(lod.vertices), len(lod.indices) // 3,
+               len(m.skeleton.bones), len(lod.materials), n_tex))
+
+    for v in lod.vertices:
+        mesh.verts.append(xf(v))
+    uv0 = lod.uvs[0].uvs if lod.uvs else []
+    for i in range(len(lod.vertices)):
+        u = uv0[i] if i < len(uv0) else (0.0, 0.0)
+        mesh.uv.append((u[0], u[1]))
+
+    face_mat = []
+    for mi, mt in enumerate(lod.materials):
+        face_mat.extend([mi] * max(0, int(mt.num_faces)))
+    ntris = len(lod.indices) // 3
+    if len(face_mat) < ntris:
+        face_mat.extend([0] * (ntris - len(face_mat)))
+    del face_mat[ntris:]
+
+    idxs = lod.indices
+    for t in range(0, len(idxs) - 2, 3):
+        mesh.tris.append((idxs[t], idxs[t + 1], idxs[t + 2]))
+
+    # 骨骼：把局部平移累加成模型空间位置，预览的点才是对的
+    world = [None] * len(m.skeleton.bones)
+    for _ in range(len(world) + 2):
+        done = True
+        for i, b in enumerate(m.skeleton.bones):
+            if world[i] is not None:
+                continue
+            p = b.parent
+            if 0 <= p < len(world):
+                if world[p] is None:
+                    done = False
+                    continue
+                q = world[p]
+                world[i] = (q[0] + b.pos[0], q[1] + b.pos[1], q[2] + b.pos[2])
+            else:
+                world[i] = tuple(b.pos)
+        if done:
+            break
+    for i in range(len(world)):
+        if world[i] is None:
+            world[i] = tuple(m.skeleton.bones[i].pos)
+    mesh.bones = [xf(w) for w in world]
+
+    if with_textures:
+        mesh._tex_state = None
+    else:
+        mesh._tex_state = {"kind": "uemodel", "path": path, "folder": folder,
+                           "face_mat": face_mat, "materials": list(lod.materials)}
+
+    _resolve_face_colors(mesh, face_mat, mats)
+    return mesh
+
+
 def classify(path):
     ext = os.path.splitext(path)[1].lower()
     return {".fbx": "fbx", ".unitypackage": "unitypackage",
-            ".vrm": "vrm", ".glb": "vrm", ".pmx": "pmx"}.get(ext, "unknown")
+            ".vrm": "vrm", ".glb": "vrm", ".pmx": "pmx",
+            ".uemodel": "uemodel"}.get(ext, "unknown")
 
 
 def load_preview(path, kind=None, log=None, flip_z=True, with_textures=True):
@@ -1023,6 +1150,8 @@ def load_preview(path, kind=None, log=None, flip_z=True, with_textures=True):
         return mesh_from_fbx(path, flip_z=flip_z, log=log, with_textures=with_textures)
     if kind == "unitypackage":
         return mesh_from_unitypackage(path, log=log, with_textures=with_textures)
+    if kind == "uemodel":
+        return mesh_from_uemodel(path, log=log, with_textures=with_textures)
     raise ValueError("不支持的格式：%s" % path)
 
 

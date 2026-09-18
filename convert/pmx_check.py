@@ -137,7 +137,10 @@ def read_pmx(path):
         memo = r.text()
         fcount = r.i32()
         mats.append({"name": name, "diffuse": diff, "flag": flag,
-                     "tex": tex, "faces": fcount})
+                     "tex": tex, "faces": fcount,
+                     "sph": sph, "sph_mode": sph_mode,
+                     "toon_flag": toon_flag, "toon": toon,
+                     "memo": memo})
     out["materials"] = mats
     if os.environ.get("PMX_DEBUG"):
         print("[dbg] after materials p=%d (nm=%d)" % (r.p, nm))
@@ -173,18 +176,21 @@ def read_pmx(path):
                 r.f32()
         if bflag & 0x2000:
             r.i32()                     # 外部親Key 只有 4 字节
+        ik = None
         if bflag & 0x0020:
             # IK: ターゲット(ボーンIndex) / ループ回数(int) /
             #     1回あたりの制限角度(float) / リンク数(int)
-            r.idx(bi_s); r.i32(); r.f32()
+            tgt = r.idx(bi_s); r.i32(); r.f32()
             nl = r.i32()
+            links = []
             for _ in range(nl):
-                r.idx(bi_s)                 # リンクボーンIndex
+                links.append(r.idx(bi_s))   # リンクボーンIndex
                 if r.u8():                  # 角度制限フラグ（每个 link 交错）
                     for _ in range(6):      # 下限 float×3 + 上限 float×3
                         r.f32()
+            ik = {"target": tgt, "links": links}
         bones.append({"name": bname, "pos": pos, "parent": parent,
-                      "flag": bflag, "layer": layer, "tail": tail})
+                      "flag": bflag, "layer": layer, "tail": tail, "ik": ik})
     out["bones"] = bones
 
     # morphs
@@ -194,36 +200,41 @@ def read_pmx(path):
         mname = r.text(); mname_en = r.text()
         panel = r.u8(); kind = r.u8()
         noff = r.i32()
+        refs = []                           # [(目标类, 索引)] 供越界检查用
         if kind == 0:                       # グループ
             for _ in range(noff):
-                r.idx(moi_s); r.f32()
+                refs.append(("morph", r.idx(moi_s)))
+                r.f32()
         elif kind == 1:                     # 頂点（顶点索引 + 3 个偏移）
             for _ in range(noff):
-                r.idx(vi_s, signed=False)
+                refs.append(("vertex", r.idx(vi_s, signed=False)))
                 r.f32(); r.f32(); r.f32()
         elif kind == 2:                     # ボーン
             for _ in range(noff):
-                r.idx(bi_s); r.f32(); r.f32(); r.f32()
+                refs.append(("bone", r.idx(bi_s)))
+                r.f32(); r.f32(); r.f32()
                 r.f32(); r.f32(); r.f32(); r.f32()
         elif kind in (3, 4, 5, 6, 7):       # UV / 追加UV1-4（4 个偏移）
             for _ in range(noff):
-                r.idx(vi_s, signed=False)
+                refs.append(("vertex", r.idx(vi_s, signed=False)))
                 r.f32(); r.f32(); r.f32(); r.f32()
         elif kind == 8:                     # 材質
             for _ in range(noff):
-                r.idx(mi_s); r.u8()
+                refs.append(("material", r.idx(mi_s)))
+                r.u8()
                 for _ in range(28):
                     r.f32()
         elif kind == 9:                     # フリップ
             for _ in range(noff):
-                r.idx(moi_s); r.f32()
+                refs.append(("morph", r.idx(moi_s)))
+                r.f32()
         elif kind == 10:                    # インパルス（刚体索引）
             for _ in range(noff):
-                r.idx(ri_s)
+                refs.append(("rigid", r.idx(ri_s)))
                 r.u8()                  # ローカルフラグ
                 r.f32(); r.f32(); r.f32()
                 r.f32(); r.f32(); r.f32()
-        morphs.append({"name": mname, "kind": kind, "count": noff})
+        morphs.append({"name": mname, "kind": kind, "count": noff, "refs": refs})
     out["morphs"] = morphs
 
     # display frames
@@ -248,9 +259,10 @@ def read_pmx(path):
     #      質量/移動減衰/回転減衰/反発力/摩擦力/物理演算
     nrb = r.i32()
     out["rigid_bodies"] = nrb
+    rb_bones = []
     for _ in range(nrb):
         r.text(); r.text()
-        r.idx(bi_s)
+        rb_bones.append(r.idx(bi_s))
         r.u8()
         r.p += 2
         r.u8()
@@ -260,12 +272,15 @@ def read_pmx(path):
     # 关节：名/英名/種類/剛体A/剛体B/8 个 vec3
     nj = r.i32()
     out["joints"] = nj
+    joints = []
     for _ in range(nj):
         r.text(); r.text()
         r.u8()
-        r.idx(ri_s); r.idx(ri_s)
+        joints.append((r.idx(ri_s), r.idx(ri_s)))
         for _ in range(24):
             r.f32()
+    out["rigid_bones"] = rb_bones
+    out["joint_rigid"] = joints
     out["consumed"] = r.p
     out["filesize"] = len(d)
     return out
@@ -385,15 +400,194 @@ def render(model, size=560, bg=(250, 250, 250), show_bones=False):
     return img
 
 
+def mmd_audit(m, path=None):
+    """MMD 比 PMXEditor 严格的那些点。
+
+    PMXEditor 很宽容：索引越界、版本号、编码它大多能糊过去。MMD（DirectX9 时代
+    的老程序）不行 —— 越界的索引会直接把顶点/物理数据喂进渲染管线，
+    表现就是「PMXEditor 能开、MMD 打不开」。这里逐项对照。
+
+    返回 (ok_list, problems)，problems 里的每一条都是**可能导致 MMD 拒绝载入**
+    或载入后出错的原因；ok_list 是已确认没问题的项。
+    """
+    nv = len(m["vertices"])
+    nb = len(m["bones"])
+    ntex = len(m["textures"])
+    nmat = len(m["materials"])
+    nmo = len(m["morphs"])
+    nfo = len(m["faces"])
+    nrb = m.get("rigid_bodies", 0)
+    nj = m.get("joints", 0)
+    ok, bad = [], []
+
+    # --- 1. 文本编码：这是「PE 能开 / MMD 不能开」最常见的成因 -------
+    enc = m["globals"][0] if m.get("globals") else -1
+    if enc == 0:
+        ok.append("文本编码 UTF-16LE（MMD 要求的编码）")
+    elif enc == 1:
+        bad.append("文本编码是 UTF-8 —— MMD 只认 UTF-16LE，会直接拒绝载入；"
+                   "PMXEditor 两种都能开，所以症状正好是「PE 能开、MMD 不能开」。"
+                   "修复：python formats/pmxio.py <文件>（或 PE 里另存为 UTF-16）")
+
+    # --- 2. 版本号 ------------------------------------------------
+    v = m["version"]
+    if v > 2.05:
+        bad.append("版本号 %.2f（PMX 2.1）：部分 MMD 版本不认 2.1，"
+                   "会报 Invalid PMX format。建议降成 2.0 再试" % v)
+    elif abs(v - 2.0) > 0.01:
+        bad.append("版本号 %.2f 不是 2.0，MMD 只保证认识 2.0" % v)
+    else:
+        ok.append("版本号 2.0")
+
+    # --- 3. 索引越界（MMD 最不能忍的一类）--------------------------
+    n = sum(1 for f in m["faces"] if f >= nv)
+    if n:
+        bad.append("%d 个面引用了不存在的顶点（顶点只有 %d 个）" % (n, nv))
+    n = 0
+    for vt in m["vertices"]:
+        for b in vt[4]:
+            if b >= nb or b < 0:
+                n += 1
+    if n:
+        bad.append("%d 个顶点权重的骨骼索引越界（骨骼只有 %d 根）" % (n, nb))
+
+    n = 0
+    for mt in m["materials"]:
+        for key in ("tex", "sph"):
+            k = mt.get(key, -1)
+            if k != -1 and not (0 <= k < ntex):
+                bad.append("材质「%s」的%s索引 %d 越界（贴图只有 %d 张）"
+                           % (mt.get("name"), key, k, ntex))
+                n += 1
+        if mt.get("toon_flag", 0) == 0:
+            k = mt.get("toon", -1)
+            if k != -1 and not (0 <= k < ntex):
+                bad.append("材质「%s」的 Toon 贴图索引 %d 越界（贴图只有 %d 张）"
+                           % (mt.get("name"), k, ntex))
+                n += 1
+        elif not (0 <= mt.get("toon", 9) <= 9):
+            bad.append("材质「%s」的共享 Toon 编号 %d 越界（必须是 0〜9）"
+                       % (mt.get("name"), mt.get("toon")))
+            n += 1
+    if not n:
+        ok.append("材质引用的贴图 / 球面 / Toon 索引都在范围内")
+
+    limit = {"vertex": nv, "bone": nb, "material": nmat, "morph": nmo, "rigid": nrb}
+    n = 0
+    for mo in m["morphs"]:
+        for tgt, ix in (mo.get("refs") or []):
+            hi = limit.get(tgt)
+            if hi is None:
+                continue
+            if not (0 <= ix < hi):
+                bad.append("表情「%s」引用了越界的%s索引 %d（上限 %d）"
+                           % (mo.get("name"), tgt, ix, hi))
+                n += 1
+                break
+    if not n:
+        ok.append("表情的引用索引都在范围内")
+
+    n = 0
+    for fr in m["frames"]:
+        for tgt, ix, _ in fr["items"]:
+            if tgt == "bone" and not (0 <= ix < nb):
+                bad.append("显示枠「%s」引用了不存在的骨骼 %d" % (fr["name"], ix))
+                n += 1
+            elif tgt == "morph" and not (0 <= ix < nmo):
+                bad.append("显示枠「%s」引用了不存在的表情 %d" % (fr["name"], ix))
+                n += 1
+    if not n:
+        ok.append("显示枠的骨骼 / 表情引用都在范围内")
+
+    n = 0
+    for bo in m["bones"]:
+        p = bo.get("parent", -1)
+        if p != -1 and not (0 <= p < nb):
+            bad.append("骨骼「%s」的父骨骼索引 %d 越界" % (bo["name"], p))
+            n += 1
+        ik = bo.get("ik")
+        if ik:
+            if not (0 <= ik["target"] < nb):
+                bad.append("骨骼「%s」的 IK 目标 %d 越界" % (bo["name"], ik["target"]))
+                n += 1
+            for lk in ik["links"]:
+                if not (0 <= lk < nb):
+                    bad.append("骨骼「%s」的 IK 链接 %d 越界" % (bo["name"], lk))
+                    n += 1
+    if not n:
+        ok.append("骨骼父级 / IK 引用都在范围内")
+
+    if nrb or nj:
+        n = 0
+        for bx in m.get("rigid_bones") or []:
+            if bx != -1 and not (0 <= bx < nb):
+                bad.append("刚体关联的骨骼索引 %d 越界（-1 表示不关联骨骼）" % bx)
+                n += 1
+        for a, b in m.get("joint_rigid") or []:
+            for x in (a, b):
+                if not (0 <= x < nrb):
+                    bad.append("关节引用了不存在的刚体 %d（刚体只有 %d 个）" % (x, nrb))
+                    n += 1
+        if not n:
+            ok.append("刚体 / 关节的引用都在范围内")
+    else:
+        ok.append("没有刚体 / 关节（不会踩物理数据的坑）")
+
+    # --- 4. 名字里的坑 -------------------------------------------
+    def bad_name(s):
+        return (s or "").strip() == "" or any(ord(c) < 32 for c in (s or ""))
+
+    hit = [nm for nm in ([x.get("name") for x in m["materials"]] +
+                         [x.get("name") for x in m["bones"]] +
+                         [x.get("name") for x in m["morphs"]] +
+                         [x.get("name") for x in m["frames"]]) if bad_name(nm)]
+    if hit:
+        bad.append("%d 个名字为空或含控制字符（MMD 可能读不稳）：%s"
+                   % (len(hit), hit[:5]))
+
+    # --- 5. 规模：32 位 MMD 的内存上限 ----------------------------
+    mb = (m["filesize"] / 1048576.0)
+    if nv >= 300000 or nfo >= 900000:
+        bad.append("规模偏大（%d 顶点 / %d 面索引 / %.1f MB）：32 位 MMD 有 2GB "
+                   "地址空间上限，内存吃紧时会直接载入失败，PE 反而更能扛"
+                   % (nv, nfo, mb))
+
+    # --- 6. 路径字符集（日文系统 ANSI = CP932）--------------------
+    if path:
+        full = os.path.abspath(path)
+        parts = [full] + full.replace("\\", "/").split("/")
+        weird = []
+        for s in parts:
+            for c in s:
+                try:
+                    c.encode("cp932")
+                except Exception:
+                    weird.append(c)
+        weird = sorted(set(weird))
+        if weird:
+            bad.append("文件路径含日文系统（CP932）表示不了的字符 %s —— MMD 用的是"
+                       "老式路径处理，遇到非 ANSI 字符会静默失败（无报错、模型不出现），"
+                       "而 PMXEditor 没事。建议放到纯英文 / 纯日文路径下再试"
+                       % (weird[:8],))
+        else:
+            ok.append("路径字符在日文系统（CP932）下可表示")
+
+    return ok, bad
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("pmx")
     ap.add_argument("-o", "--out", default=None)
     ap.add_argument("--size", type=int, default=560)
     ap.add_argument("--no-render", action="store_true")
+    ap.add_argument("--mmd", action="store_true",
+                    help="只做「MMD 能不能载入」体检（不渲染预览）")
     ap.add_argument("--bones", action="store_true",
                     help="overlay bone positions as red markers")
     a = ap.parse_args()
+    if a.mmd:
+        a.no_render = True
 
     m = read_pmx(a.pmx)
     print("file      : %s" % a.pmx)
@@ -449,6 +643,22 @@ def main():
         unused = [mm["name"] for mm in m["materials"] if mm["faces"] == 0]
         if unused:
             print("  materials with 0 faces: %s" % unused)
+
+    # ---------------------------------------------- MMD 可载入性体检 --
+    ok, bad = mmd_audit(m, a.pmx)
+    print("")
+    print("== MMD 可载入性体检 ==")
+    for s in ok:
+        print("  [OK]   %s" % s)
+    if bad:
+        for s in bad:
+            print("  [问题] %s" % s)
+        print("  → 结论：有 %d 项可能导致 MMD 无法载入（PMXEditor 宽容，"
+              "这些它多半能开）" % len(bad))
+    else:
+        print("  → 结论：这个 PMX 在 MMD 侧应该能正常载入。"
+              "若 MMD 仍打不开，请确认 MMD 版本、内存，以及模型是否放在"
+              "纯英文/日文路径下")
 
     if a.no_render:
         return 0

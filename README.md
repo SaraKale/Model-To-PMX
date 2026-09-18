@@ -1,6 +1,6 @@
 # FBX / VRM / PMX Model Converter (Pure Python)
 
-Convert `.fbx`, `.unitypackage`, `.vrm`, and `.pmx` into each other, **entirely with the Python standard library**.
+Convert `.fbx`, `.unitypackage`, `.vrm`, `.pmx`, and `.uemodel` (UEFormat) into each other, **entirely with the Python standard library**.
 No Blender / Autodesk FBX SDK / Unity 3D required, and no plugins such as mmd_tools / UniVRM.
 It reads and writes the binary formats directly — just drag a file into the window to convert.
 
@@ -22,6 +22,8 @@ Download the latest version from [releases](https://github.com/SaraKale/Model-to
 | FBX / unitypackage → PMX | PMX 2.0 for MMD; quads are auto-fan-triangulated |
 | VRM (0.x / 1.0) → PMX | Auto-detects humanoid bones; fills missing ones with placeholder bones |
 | PMX → VRM (0.x / 1.0) | Auto-writes VRM meta, humanoid bone mapping, and morph targets |
+| uemodel (UEFormat) → PMX | Reads the public UEFormat `.uemodel` (v1–v10); can also write an ASCII FBX in the same run |
+| PMX → uemodel (UEFormat) | Writes UEFormat `.uemodel` (v9 by default, v10 optional) for the UE / FModel toolchain |
 | PMX → validation + preview only | Read-only structural validation; no file output |
 
 ### Core features
@@ -37,7 +39,7 @@ Download the latest version from [releases](https://github.com/SaraKale/Model-to
   and overlay bone points to check alignment.
 - **Multilingual UI**: Switch between Simplified Chinese / Traditional Chinese / English / Japanese in the top-right; the choice is saved to config.
 - **HiDPI friendly**: Auto-scales to system DPI; the top-right "UI zoom" lets you set a manual factor.
-- **Tabbed options**: The options area is split into four tabs — General / FBX / VRM / Output — for easy extension.
+- **Tabbed options**: The options area is split into five tabs — General / FBX / VRM / UE / Output — for easy extension.
 - **Automatic winding-order detection**: Triangle winding is auto-decided by voting between geometric-face normals and vertex normals,
   avoiding large holes / outline lines smearing into black blobs.
 - **Texture handling**: PNG/JPEG pass through directly; BMP/TGA are converted to PNG on the fly; embedded in GLB or exported to the PMX directory.
@@ -65,12 +67,16 @@ Model-to-PMX/
 │   ├── fbx_probe.py             #   Probe FBX structure (mesh/bones/skinning list)
 │   ├── pmxio.py                 #   Full PMX 2.0 read/write (incl. morph/IK/additional/rigidbody/joint)
 │   ├── vrmio.py                 #   GLB/glTF container read/write + PNG encode + BMP/TGA decode
+│   ├── uemodelio.py             #   UEFormat .uemodel read/write (v1–v10)
+│   ├── fbxout.py                #   ASCII FBX 7.4 writer (the "also export FBX" option)
 │   └── unitypackage_unpack.py   #   Unpack .unitypackage (gzip tar)
 │
 ├── convert/                     # Conversion engine
 │   ├── fbx2pmx.py               #   FBX → PMX
 │   ├── vrm2pmx.py               #   VRM → PMX
 │   ├── pmx2vrm.py               #   PMX → VRM
+│   ├── uemodel2pmx.py           #   uemodel (UEFormat) → PMX (+ optional ASCII FBX)
+│   ├── pmx2uemodel.py           #   PMX → uemodel (UEFormat)
 │   └── pmx_check.py             #   PMX validation + software-rendered preview image
 │
 ├── gfx/
@@ -88,7 +94,7 @@ Model-to-PMX/
 ### Method 1: Graphical interface (recommended)
 
 1. Run `python main.py`
-2. **Drag** a `.fbx` / `.unitypackage` / `.vrm` / `.pmx` file **anywhere into the window**, or click the drop area to choose a file.
+2. **Drag** a `.fbx` / `.unitypackage` / `.vrm` / `.pmx` / `.uemodel` file **anywhere into the window**, or click the drop area to choose a file.
    **Dropping only loads the file and shows the preview — nothing is converted automatically.**
    Check the task direction and options, then click "Start conversion" to run.
 3. A **selected-file list** (file name / format / size) appears under the drop area, so you can see at a glance what will be converted:
@@ -106,7 +112,9 @@ UI highlights:
 - **Render backend badge (bottom-right of the preview)**: shows whether `Pillow` or pure Python is in use, plus the last frame time in ms
 - **"Language" (top-right)**: Simplified Chinese / Traditional Chinese / English / Japanese (the preview toolbar follows too)
 - **"UI zoom" (top-right)**: Auto-follows system DPI, or set a manual factor
-- **Option tabs**: General / FBX / VRM / Output, four tabs
+- **Option tabs**: General / FBX / VRM / UE / Output, five tabs
+- **UE tab**: when the `.uemodel` → PMX task is selected, tick "also export an FBX file" to get an ASCII FBX next to the PMX; the same tab sets target height (cm) and alpha handling
+- **Textures in the exported FBX**: the written FBX **flips the UV V axis** (PMX/MMD put the UV origin top-left, FBX / Blender / Maya bottom-left) and references textures as a relative path `textures/…`. Keep the FBX next to the PMX together with its `textures` folder — otherwise the shape looks right but the patterns are shifted all over
 - **Enlarged checkboxes**: The checkboxes and click areas are easier to hit
 
 ### Why the preview stays smooth on heavy models
@@ -145,6 +153,14 @@ python convert/pmx2vrm.py "model.pmx" --spec 0x --title "Name" --author "Author"
 
 # VRM → PMX (textures auto-exported to the PMX directory)
 python convert/vrm2pmx.py "model.vrm" -o "model.pmx"
+
+# uemodel (UEFormat) → PMX; add --fbx to also write an ASCII FBX next to the PMX
+python convert/uemodel2pmx.py "model.uemodel" -o "model.pmx"
+python convert/uemodel2pmx.py "model.uemodel" -o "model.pmx" --fbx
+
+# PMX → uemodel (UEFormat v9 by default; --version 10 for the newer layout)
+python convert/pmx2uemodel.py "model.pmx" -o "model.uemodel"
+python convert/pmx2uemodel.py "model.pmx" -o "model.uemodel" --version 10
 
 # PMX validation + generate preview image
 python convert/pmx_check.py "model.pmx"
@@ -255,7 +271,7 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 
 ### Known limitations
 
-- **FBX structure**: Binary FBX 7.x only; ASCII FBX is not supported.
+- **FBX structure**: both binary FBX 7.x and ASCII FBX are read (the older "ASCII is not supported" note was wrong).
 - **Texture formats**: DDS / KTX2 / WebP are skipped (material degrades to a solid color).
 - **Physics**: PMX rigidbody/joint ↔ VRM SpringBone are **not** converted between each other.
 - **Material effects**: Spherical maps (.sph/.spa) and toon maps are not preserved on the VRM side.

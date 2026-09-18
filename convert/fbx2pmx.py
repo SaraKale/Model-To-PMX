@@ -149,6 +149,16 @@ def _clean_name(s):
     return s.split("\x00")[0]
 
 
+def _ns_strip(s):
+    """剥掉 FBX 的 `Class::name` 命名空间前缀。
+
+    Autodesk 自家的导出器一律写 `"SubDeformer::Smile"` / `"Shape::Smile"`，
+    而 FBX SDK 的 GetName() 会自动剥前缀、Blender 也会剥；本工程的解析器是
+    直接读字段原文，所以这里补一次，免得表情名/材质名带一截 `Shape::`。
+    """
+    return s.split("::")[-1] if "::" in s else s
+
+
 class Scene:
     def __init__(self, path):
         self.path = path
@@ -415,8 +425,8 @@ class Scene:
                 deltas = vn.props[0]
                 if not indexes or len(deltas) < 3 * len(indexes):
                     continue
-                name = _clean_name(sh.props[1]) \
-                    or _clean_name(self.byid[chid].props[1])
+                name = _ns_strip(_clean_name(sh.props[1])) \
+                    or _ns_strip(_clean_name(self.byid[chid].props[1]))
                 self.morphs.append({"name": name, "geo_id": gid,
                                     "indexes": indexes, "deltas": deltas})
 

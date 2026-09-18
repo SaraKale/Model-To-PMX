@@ -1,6 +1,6 @@
 # FBX / VRM / PMX モデル変換ツール（純 Python）
 
-`.fbx`・`.unitypackage`・`.vrm`・`.pmx` を相互に変換します。**すべて Python 標準ライブラリだけで実装**しています。
+`.fbx`・`.unitypackage`・`.vrm`・`.pmx`・`.uemodel`（UEFormat）を相互に変換します。**すべて Python 標準ライブラリだけで実装**しています。
 Blender / Autodesk FBX SDK / Unity 3D は不要、mmd_tools / UniVRM といったプラグインも不要です。
 バイナリ形式を直接読み書きし、ウィンドウへドラッグするだけで変換できます。
 
@@ -22,6 +22,8 @@ Blender / Autodesk FBX SDK / Unity 3D は不要、mmd_tools / UniVRM といっ�
 | FBX / unitypackage → PMX | MMD 用 PMX 2.0、四角面は自動的にファン三角形化 |
 | VRM（0.x / 1.0） → PMX | humanoid ボーンを自動認識し、不足分はプレースホルダー骨で補完 |
 | PMX → VRM（0.x / 1.0） | VRM メタ・humanoid ボーン映射・morph target を自動書き込み |
+| uemodel（UEFormat） → PMX | 公開仕様 UEFormat の `.uemodel`（v1–v10）を読み込み。同じ実行で ASCII FBX も書き出し可能 |
+| PMX → uemodel（UEFormat） | UEFormat `.uemodel`（既定 v9、v10 も指定可）を書き出し。UE / FModel エコシステムへ |
 | PMX → 検証 + プレビューのみ | 構造の読み取り専用検証、ファイルは出力しない |
 
 ### コア機能
@@ -37,7 +39,7 @@ Blender / Autodesk FBX SDK / Unity 3D は不要、mmd_tools / UniVRM といっ�
   ボーン点を重ねて位置合わせを確認できます。
 - **多言語 UI**：右上で 简体中文 / 繁體中文 / English / 日本語 を切り替えられ、選択は設定に記憶されます。
 - **高解像度ディスプレイ対応**：システム DPI に自動追従。右上の「界面缩放（UI 拡縮）」で倍率を手動指定も可。
-- **タブ式オプション**：オプション欄は「通用 / FBX / VRM / 出力」の 4 タブに分かれ、拡張しやすいです。
+- **タブ式オプション**：オプション欄は「通用 / FBX / VRM / UE / 出力」の 5 タブに分かれ、拡張しやすいです。
 - **巻き順の自動判定**：三角形の巻き順を「幾何面法線 vs 頂点法線」の投票で自動判定し、
   大面積の抜け / 輪郭線が黒い塊になるのを防ぎます。
 - **テクスチャ処理**：PNG/JPEG はそのまま透過、BMP/TGA はその場で PNG に変換、GLB へ埋め込むか PMX と同じフォルダへ書き出し。
@@ -65,12 +67,16 @@ Model-to-PMX/
 │   ├── fbx_probe.py             #   FBX 構造の調査（メッシュ/ボーン/スキン一覧）
 │   ├── pmxio.py                 #   完全な PMX 2.0 読み書き（表情/IK/付与/剛体/ジョイント含む）
 │   ├── vrmio.py                 #   GLB/glTF コンテナ読み書き + PNG エンコード + BMP/TGA デコード
+│   ├── uemodelio.py             #   UEFormat .uemodel の読み書き（v1–v10）
+│   ├── fbxout.py                #   ASCII FBX 7.4 ライタ（「FBX も同時出力」用）
 │   └── unitypackage_unpack.py   #   .unitypackage の解凍（gzip tar）
 │
 ├── convert/                     # 変換エンジン
 │   ├── fbx2pmx.py               #   FBX → PMX
 │   ├── vrm2pmx.py               #   VRM → PMX
 │   ├── pmx2vrm.py               #   PMX → VRM
+│   ├── uemodel2pmx.py           #   uemodel（UEFormat）→ PMX（FBX 同時出力可）
+│   ├── pmx2uemodel.py           #   PMX → uemodel（UEFormat）
 │   └── pmx_check.py             #   PMX 検証 + ソフトウェア描画のプレビュー画像
 │
 ├── gfx/
@@ -88,7 +94,7 @@ Model-to-PMX/
 ### 方法 1：グラフィカル UI（推奨）
 
 1. 実行：`python main.py`
-2. `.fbx` / `.unitypackage` / `.vrm` / `.pmx` ファイルを**ウィンドウ内の任意の場所へドラッグ**、またはドロップ領域をクリックしてファイルを選択。
+2. `.fbx` / `.unitypackage` / `.vrm` / `.pmx` / `.uemodel` ファイルを**ウィンドウ内の任意の場所へドラッグ**、またはドロップ領域をクリックしてファイルを選択。
    **ドロップでは読み込みとプレビューのみ行い、自動変換はしません**。タスク方向とオプションを確認し、「変換開始」を押すと実行されます。
 3. ドロップ領域の下に**選択ファイル一覧**（ファイル名 / 形式 / サイズ）が表示され、今回変換する内容が一目で分かります：
    - 追加ドロップは**追記**（絶対パスで重複を自動除外）；
@@ -105,7 +111,9 @@ UI のポイント：
 - **プレビュー右下の描画バックエンド表示**：`Pillow` か純 Python か、および前フレームの所要時間（ms）
 - **右上「言語」**：简体中文 / 繁體中文 / English / 日本語（プレビューのツールバーも追従）
 - **右上「界面缩放（UI 拡縮）」**：システム DPI に自動追従、または倍率を手動指定
-- **オプションタブ**：「通用 / FBX / VRM / 出力」の 4 タブ
+- **オプションタブ**：「通用 / FBX / VRM / UE / 出力」の 5 タブ
+- **UE タブ**：タスクで「uemodel → PMX」を選んだとき、「同時に FBX を出力」にチェックすると PMX の隣に ASCII FBX も書き出します。このタブでは目標身長（cm）とアルファの扱いも設定できます
+- **書き出した FBX のテクスチャ**：FBX は UV の **V 軸を反転**して書き出します（PMX/MMD は UV 原点が左上、FBX / Blender / Maya は左下）。テクスチャは相対パス `textures/…` で参照するので、FBX は PMX の隣に置き `textures` フォルダも一緒に持って行ってください。そうしないと「形は合っているのに模様が全体的にズレる」見え方になります
 - **チェックボックス拡大**：チェック枠とクリック領域が押しやすくなっています
 
 ### 重いモデルでもプレビューが軽い理由
@@ -144,6 +152,14 @@ python convert/pmx2vrm.py "model.pmx" --spec 0x --title "名前" --author "作�
 
 # VRM → PMX（テクスチャは PMX と同じフォルダへ自動書き出し）
 python convert/vrm2pmx.py "model.vrm" -o "model.pmx"
+
+# uemodel（UEFormat）→ PMX；--fbx を付けると PMX の隣に ASCII FBX も出力
+python convert/uemodel2pmx.py "model.uemodel" -o "model.pmx"
+python convert/uemodel2pmx.py "model.uemodel" -o "model.pmx" --fbx
+
+# PMX → uemodel（既定は UEFormat v9；--version 10 で新しいバイト配置）
+python convert/pmx2uemodel.py "model.pmx" -o "model.uemodel"
+python convert/pmx2uemodel.py "model.pmx" -o "model.uemodel" --version 10
 
 # PMX 検証 + プレビュー画像生成
 python convert/pmx_check.py "model.pmx"
@@ -253,7 +269,7 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 
 ### 既知の制限
 
-- **FBX 構造**：バイナリ FBX 7.x のみ対応。ASCII FBX は非対応。
+- **FBX 構造**：バイナリ FBX 7.x と ASCII FBX の **両方に対応**（以前の「ASCII 非対応」は誤りでした）。
 - **テクスチャ形式**：DDS / KTX2 / WebP はスキップされる（材質は単色に退化）。
 - **物理**：PMX 剛体/ジョイント ↔ VRM SpringBone は**相互変換されない**。
 - **材質効果**：球環境マップ（.sph/.spa）・toon マップは VRM 側に保持されない。

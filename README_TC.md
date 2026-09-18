@@ -1,6 +1,6 @@
 # FBX / VRM / PMX 模型轉換器（純 Python）
 
-把 `.fbx`、`.unitypackage`、`.vrm`、`.pmx` 互相轉換，**全部用 Python 標準庫實作**。
+把 `.fbx`、`.unitypackage`、`.vrm`、`.pmx`、`.uemodel`（UEFormat）互相轉換，**全部用 Python 標準庫實作**。
 不需要 Blender / Autodesk FBX SDK / Unity 3D，也不需要 mmd_tools / UniVRM 等外掛。直接讀寫二進制格式，拖進視窗即可轉換。
 
 [English](README.md) | [簡體中文](README_SC.md) | [繁體中文](README_TC.md) | [日本語](README_JP.md)
@@ -21,6 +21,8 @@
 | FBX / unitypackage → PMX | MMD 用 PMX 2.0，四邊形自動扇形三角化 |
 | VRM（0.x / 1.0） → PMX | 自動辨識 humanoid 骨骼，缺的補佔位骨 |
 | PMX → VRM（0.x / 1.0） | 自動寫 VRM meta、humanoid 骨骼映射、morph target |
+| uemodel（UEFormat） → PMX | 讀公開的 UEFormat `.uemodel`（v1–v10）；可同時匯出一份 ASCII FBX |
+| PMX → uemodel（UEFormat） | 寫出 UEFormat `.uemodel`（預設 v9，可選 v10），可交給 UE / FModel 生態 |
 | PMX → 僅校驗 + 預覽 | 唯讀結構校驗，不輸出檔案 |
 
 ### 核心特性
@@ -35,7 +37,7 @@
   可疊加骨骼點檢查對齊。
 - **多語言介面**：右上角可切換 簡體中文 / 繁體中文 / English / 日本語，選擇記憶到設定。
 - **高分屏友善**：依系統 DPI 自動縮放，右上角「介面縮放」可手動指定倍率。
-- **分頁式選項**：選項區按「通用 / FBX / VRM / 輸出」分為四個標籤頁，易於擴充。
+- **分頁式選項**：選項區按「通用 / FBX / VRM / UE / 輸出」分為五個標籤頁，易於擴充。
 - **自動繞序判定**：三角形繞序用「幾何面法線 vs 頂點法線」投票自動判定，
   避免出現大面積鏤空 / 輪廓線糊成黑塊。
 - **貼圖處理**：PNG/JPEG 直接透傳，BMP/TGA 現轉 PNG，嵌入 GLB 或匯出到 PMX 同目錄。
@@ -63,12 +65,16 @@ Model-to-PMX/
 │   ├── fbx_probe.py             #   探查 FBX 結構（網格/骨骼/蒙皮清單）
 │   ├── pmxio.py                 #   完整 PMX 2.0 讀寫（含表情/IK/付與/剛體/關節）
 │   ├── vrmio.py                 #   GLB/glTF 容器讀寫 + PNG 編碼 + BMP/TGA 解碼
+│   ├── uemodelio.py             #   UEFormat .uemodel 讀寫（v1–v10）
+│   ├── fbxout.py                #   ASCII FBX 7.4 寫出器（「同時匯出 FBX」用）
 │   └── unitypackage_unpack.py   #   解包 .unitypackage（gzip tar）
 │
 ├── convert/                     # 轉換引擎
 │   ├── fbx2pmx.py               #   FBX → PMX
 │   ├── vrm2pmx.py               #   VRM → PMX
 │   ├── pmx2vrm.py               #   PMX → VRM
+│   ├── uemodel2pmx.py           #   uemodel（UEFormat）→ PMX（可同時匯出 FBX）
+│   ├── pmx2uemodel.py           #   PMX → uemodel（UEFormat）
 │   └── pmx_check.py             #   PMX 校驗 + 軟體渲染預覽圖
 │
 ├── gfx/
@@ -86,7 +92,7 @@ Model-to-PMX/
 ### 方式一：圖形介面（推薦）
 
 1. 輸入執行 `python main.py`
-2. 把 `.fbx` / `.unitypackage` / `.vrm` / `.pmx` 檔案**拖進視窗任意位置**，或點擊拖放區選擇檔案。
+2. 把 `.fbx` / `.unitypackage` / `.vrm` / `.pmx` / `.uemodel` 檔案**拖進視窗任意位置**，或點擊拖放區選擇檔案。
    **拖入只會載入 + 出預覽，不會自動轉換**；確認任務方向與選項後，點「開始轉換」才會真正執行。
 3. 拖放區下方會出現**已選擇的檔案清單**（檔名 / 格式 / 大小），一眼就能看清這次要轉哪些：
    - 繼續拖入是**追加**到清單，重複的檔案依絕對路徑自動去重；
@@ -103,7 +109,9 @@ Model-to-PMX/
 - **右下角渲染後端**：顯示目前用的是 `Pillow` 還是純 Python，以及上一幀耗時（毫秒）
 - **右上角「語言」**：簡體中文 / 繁體中文 / English / 日本語（預覽工具條也會跟著切）
 - **右上角「介面縮放」**：自動跟隨系統 DPI，或手動指定倍率
-- **選項分頁**：「通用 / FBX / VRM / 輸出」四個標籤頁
+- **選項分頁**：「通用 / FBX / VRM / UE / 輸出」五個標籤頁
+- **UE 選項頁**：任務選「uemodel → PMX」時，勾上「同時匯出 FBX 檔案」就會在 PMX 旁邊多寫一份 ASCII FBX；這一頁還管目標身高（cm）與透明通道處理
+- **匯出 FBX 的貼圖**：寫出的 FBX 會把 UV 的 **V 軸翻過來**（PMX/MMD 的 UV 原點在左上，FBX / Blender / Maya 在左下），貼圖引用寫成相對路徑 `textures/…`。所以要把 FBX 放在 PMX 旁邊、`textures` 資料夾一起帶著，貼圖才顯示得出來；否則會看到「形狀對、圖案整體錯位」的樣子
 - **複選項已加大**：勾選框與點擊區域更易點擊
 
 ### 預覽為什麼這麼快（大模型也不卡）
@@ -140,6 +148,14 @@ python convert/pmx2vrm.py "model.pmx" --spec 0x --title "名字" --author "作�
 
 # VRM → PMX（貼圖自動匯出到 PMX 同目錄）
 python convert/vrm2pmx.py "model.vrm" -o "model.pmx"
+
+# uemodel（UEFormat）→ PMX；加 --fbx 會在 PMX 旁邊同時寫一份 ASCII FBX
+python convert/uemodel2pmx.py "model.uemodel" -o "model.pmx"
+python convert/uemodel2pmx.py "model.uemodel" -o "model.pmx" --fbx
+
+# PMX → uemodel（預設 UEFormat v9；--version 10 用新版位元組佈局）
+python convert/pmx2uemodel.py "model.pmx" -o "model.uemodel"
+python convert/pmx2uemodel.py "model.pmx" -o "model.uemodel" --version 10
 
 # PMX 校驗 + 產生預覽圖
 python convert/pmx_check.py "model.pmx"
@@ -250,7 +266,7 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 
 ### 已知限制
 
-- **FBX 結構**：僅支援二進制 FBX 7.x；ASCII FBX 不支援。
+- **FBX 結構**：二進位 FBX 7.x 與 ASCII FBX **都能讀**（舊文件裡「不支援 ASCII」的說法已過時）。
 - **貼圖格式**：DDS / KTX2 / WebP 會被跳過（材質退化為純色）。
 - **物理**：PMX 剛體/關節 ↔ VRM SpringBone **不會互相轉換**。
 - **材質效果**：球諧貼圖（.sph/.spa）、toon 貼圖在 VRM 側不保留。
