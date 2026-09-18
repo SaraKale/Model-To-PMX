@@ -30,6 +30,9 @@ Download the latest version from [releases](https://github.com/SaraKale/Model-to
   its absence only affects texture-decode speed and some previews, not the main pipeline.
 - **Drag & drop, ready to use**: Uses the native Windows `WM_DROPFILES`; you can drop anywhere in the window, with no
   third-party library like tkinterdnd2.
+- **Selected-file list**: after dropping, the files (name / format / size) and the total size are listed right under the drop
+  area. You can append more, remove single rows, or double-click one row to preview just that file — so **you can see at a
+  glance what this batch will convert**, and nothing runs until you click "Start conversion".
 - **Real-time back-view preview**: Drag in a model and see the 3D back view immediately; drag to rotate / scroll to zoom,
   and overlay bone points to check alignment.
 - **Multilingual UI**: Switch between Simplified Chinese / Traditional Chinese / English / Japanese in the top-right; the choice is saved to config.
@@ -86,8 +89,15 @@ Model-to-PMX/
 
 1. Run `python main.py`
 2. **Drag** a `.fbx` / `.unitypackage` / `.vrm` / `.pmx` file **anywhere into the window**, or click the drop area to choose a file.
-1. The "Task" dropdown can manually specify the conversion direction; by default it is auto-detected from the file extension.
-2. Conversion log sits at the bottom-left; the model preview is the full-height right column.
+   **Dropping only loads the file and shows the preview — nothing is converted automatically.**
+   Check the task direction and options, then click "Start conversion" to run.
+3. A **selected-file list** (file name / format / size) appears under the drop area, so you can see at a glance what will be converted:
+   - dropping again **appends** to the list; duplicates are skipped by absolute path;
+   - double-click a row to preview just that file;
+   - select rows and click "Remove selected" (or press Delete), or "Clear list" to start over;
+   - while the list has files, the drop area shrinks into a thin strip so the list gets the vertical space.
+4. The "Task" dropdown can manually specify the conversion direction; by default it is auto-detected from the file extension. Switching the task re-filters the already-loaded files (the list updates too).
+5. Conversion log sits at the bottom-left; the model preview is the full-height right column.
 
 UI highlights:
 
@@ -139,6 +149,10 @@ python convert/vrm2pmx.py "model.vrm" -o "model.pmx"
 # PMX validation + generate preview image
 python convert/pmx_check.py "model.pmx"
 python convert/pmx_check.py "model.pmx" --bones   # overlay bone positions
+
+# Change a PMX's text encoding to UTF-16LE (fix for files from older builds)
+python formats/pmxio.py "model.pmx"               # writes model_utf16.pmx
+python formats/pmxio.py "model.pmx" --in-place    # overwrite (back up first)
 ```
 
 #### Common options quick reference
@@ -247,6 +261,18 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 - **Material effects**: Spherical maps (.sph/.spa) and toon maps are not preserved on the VRM side.
 - **Bone names**: FBX conversion keeps English bone names (`Hips`, `Spine` …), so they won't match MMD's ready-made motions (.vmd); you must batch-rename them to the Japanese standard names in PMXEditor.
 - **Morphs**: When the source model has no BlendShape / morph, the PMX morphs are also 0 and must be created by hand.
+
+### MMD says it cannot load the model (text encoding)
+
+MMD **only accepts PMX files whose text encoding is UTF-16LE**. The original message is
+`MMDではエンコード方式がUTF16のPMXファイルしか読み込めません`
+(English string in the same binary: `MMD can't read UTF8 encorded PMX. Please exchange it to UTF16.`).
+The Chinese localizations render it as "MMD 不能载入编码为 UTF16 的 PMX 文件", which is a
+**mistranslation that reverses the meaning** — seeing it means the file was saved as UTF-8.
+
+This tool always writes UTF-16LE. Files exported by older builds can be fixed with
+`python formats/pmxio.py "old.pmx"`; the validation log also reports
+`文本编码是 UTF-8，MMD 无法载入（需要 UTF-16LE）`.
 
 ### Drag & drop
 

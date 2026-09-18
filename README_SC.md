@@ -29,6 +29,8 @@
   缺失只影响贴图解码速度与部分预览，不影响主流程。
 - **拖放即用**：走 Windows 原生 `WM_DROPFILES`，窗口任意位置都能拖，无需
   tkinterdnd2 之类的第三方库。
+- **待转文件列表**：拖入后拖放区下方列出 文件名 / 格式 / 大小 与总大小，可追加、
+  单选移除、双击单独预览；**只看列表就知道这次要转什么**，不点「开始转换」不动手。
 - **实时背视图预览**：拖入模型即可看到 3D 背视图，可拖动旋转 / 滚轮缩放，
   可叠加骨骼点检查对齐。
 - **多语言界面**：右上角可切换 简体中文 / 繁體中文 / English / 日本語，选择记忆到配置。
@@ -85,8 +87,14 @@ Model-to-PMX/
 
 1. 输入运行 `python main.py`
 2. 把 `.fbx` / `.unitypackage` / `.vrm` / `.pmx` 文件**拖进窗口任意位置**，或点击拖放区选择文件。
-1. 「任务」下拉框可手动指定转换方向，默认按扩展名自动判断。
-2. 转换结果与日志在左下，模型预览是右栏整列。
+   **拖入只会载入 + 出预览，不会自动转换**；确认任务方向和选项后，点「开始转换」才真正开跑。
+3. 拖放区下方会出现**已选择的文件列表**（文件名 / 格式 / 大小），一眼就能看清这次要转哪些：
+   - 继续拖入是**追加**到列表，重复的文件按绝对路径自动去重；
+   - 双击列表里的某一行 → 单独预览那个文件；
+   - 选中若干行点「移除选中」（或按 Delete），或点「清空列表」重新来过；
+   - 列表里有文件时，拖放区会收成一条窄带，把竖向空间让给列表。
+4. 「任务」下拉框可手动指定转换方向，默认按扩展名自动判断。切换任务后，已就绪的文件会按新方向重新筛选（列表同步刷新）。
+5. 转换结果与日志在左下，模型预览是右栏整列。
 
 界面要点：
 
@@ -136,6 +144,10 @@ python convert/vrm2pmx.py "model.vrm" -o "model.pmx"
 # PMX 校验 + 生成预览图
 python convert/pmx_check.py "model.pmx"
 python convert/pmx_check.py "model.pmx" --bones   # 叠加骨骼位置
+
+# 把 PMX 的文本编码改成 MMD 能读的 UTF-16LE（旧文件修复用）
+python formats/pmxio.py "model.pmx"               # 输出 model_utf16.pmx
+python formats/pmxio.py "model.pmx" --in-place    # 直接覆盖（建议先备份）
 ```
 
 #### 常用参数速查
@@ -244,6 +256,23 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 - **材质效果**：球谐贴图（.sph/.spa）、toon 贴图在 VRM 侧不保留。
 - **骨骼名**：FBX 转换保留英文骨骼名（`Hips`、`Spine` …），直接套 MMD 现成动作（.vmd）匹配不上，需在 PMXEditor 里批量改为日文标准名。
 - **表情**：源模型没有 BlendShape / morph 时，PMX 表情也为 0，需手工建。
+
+### MMD 提示无法载入（编码问题）
+
+MMD **只接受文本编码为 UTF-16LE 的 PMX**。程序里的原版提示是
+`MMDではエンコード方式がUTF16のPMXファイルしか読み込めません`（英文：
+`MMD can't read UTF8 encorded PMX. Please exchange it to UTF16.`）。
+中文汉化版把它译成「MMD不能载入编码为UTF16的PMX文件」，**属于翻译错误，意思正好相反** ——
+看到这句话时，真实原因是文件的编码是 UTF-8。
+
+本工具输出的 PMX 一律写成 UTF-16LE。手上若还有更早版本导出的 UTF-8 文件：
+
+```
+python formats/pmxio.py "旧文件.pmx"          # 生成 旧文件_utf16.pmx
+python formats/pmxio.py "旧文件.pmx" --in-place
+```
+
+界面的「校验」日志也会直接提示 `文本编码是 UTF-8，MMD 无法载入（需要 UTF-16LE）`。
 
 ### 拖放相关
 

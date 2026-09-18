@@ -422,6 +422,9 @@ class Scene:
 
 
 class PmxWriter:
+    #: 文本编码：0 = UTF-16LE（MMD 只认这一种），1 = UTF-8
+    ENC = 0
+
     def __init__(self, indices=(2, 1, 2, 2, 1, 1)):
         self.buf = bytearray()
         self.vi, self.ti, self.mi, self.bi, self.moi, self.ri = indices
@@ -434,7 +437,9 @@ class PmxWriter:
         self.buf += struct.pack("<f", v)
 
     def text(self, s):
-        b = s.encode("utf-8")
+        # MMD 不支持 UTF-8 的 PMX（原版提示：MMDではエンコード方式がUTF16の
+        # PMXファイルしか読み込めません），所以这里必须写 UTF-16LE。
+        b = s.encode("utf-16-le" if self.ENC == 0 else "utf-8")
         self.i32(len(b))
         self.buf += b
 
@@ -458,7 +463,8 @@ class PmxWriter:
         self.buf += b"PMX "
         self.f32(2.0)
         self.buf += bytes([8])
-        self.buf += bytes([1, 0, self.vi, self.ti, self.mi, self.bi,
+        # globals: [文本编码, 追加UV, 顶点/贴图/材质/骨骼/表情/刚体索引宽度]
+        self.buf += bytes([self.ENC, 0, self.vi, self.ti, self.mi, self.bi,
                            self.moi, self.ri])
         self.text(name)
         self.text(name_en)

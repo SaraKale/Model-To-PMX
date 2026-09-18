@@ -79,6 +79,7 @@ F_SMALL = (FONT, 9)
 F_DROP = (FONT, 13, "bold")
 F_DROP2 = (FONT, 9)
 F_ICON = (FONT, 26)
+F_ICON2 = (FONT, 15, "bold")
 F_MONO = ("Consolas", 9)
 
 SETTINGS_PATH = os.path.join(BASE, "config.json")
@@ -98,6 +99,9 @@ def px(v):
 VRM_SPECS = ["1.0", "0.x"]
 MODEL_EXTS = (".fbx", ".unitypackage", ".vrm", ".pmx")
 
+# 文件列表里「格式」列的显示名（与界面语言无关，都是格式自身的叫法）
+KIND_LABEL = {"fbx": "FBX", "unitypackage": "Unity", "vrm": "VRM", "pmx": "PMX"}
+
 # ----------------------------------------------------------------- i18n ----
 # 界面所有文案集中在此；切换语言后通过 _rebuild() 重建即可整窗本地化。
 LANG = {
@@ -114,7 +118,7 @@ LANG = {
         "task_vrm2pmx": "VRM → PMX",
         "task_pmx2vrm": "PMX → VRM",
         "task_check": "PMX 仅校验 + 预览",
-        "hint_auto": "按扩展名自动判断：.fbx/.unitypackage→PMX，.vrm→PMX，.pmx→VRM",
+        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM",
         "hint_fbx2pmx": "FBX / unitypackage 转成 MMD 的 PMX",
         "hint_vrm2pmx": "VRM 0.x / 1.0 转成 MMD 的 PMX（贴图会导出到同目录）",
         "hint_pmx2vrm": "PMX 转成 VRM（自动识别 humanoid 骨骼，缺的会补占位骨）",
@@ -141,7 +145,25 @@ LANG = {
         "start": "开始转换",
         "open_out": "打开输出目录",
         "clear": "清空日志",
+        "files_title": "已选择的文件",
+        "files_count": "{n} 个 · 共 {size}",
+        "files_col_name": "文件",
+        "files_col_type": "格式",
+        "files_col_size": "大小",
+        "files_remove": "移除选中",
+        "files_clear": "清空列表",
+        "files_tip": "双击列表里的文件可以单独预览它；拖入新文件会追加到列表。",
+        "files_sel_none": "请先在列表里选中要移除的文件（Ctrl / Shift 可多选）。",
+        "files_removed": "已从列表移除 {n} 个文件（剩余 {m} 个）。",
+        "files_cleared": "已清空文件列表。",
+        "drop_more": "已选择 {n} 个文件 · 继续拖入或点击这里添加更多",
         "status_wait": "等待文件…",
+        "status_staged": "已选择 {n} 个文件 · 等待开始",
+        "log_staged": "══ 已载入 {n} 个文件（等待开始）══",
+        "log_staged_add": "══ 追加 {n} 个文件 · 共 {m} 个（等待开始）══",
+        "log_staged_dup": "（{n} 个文件已在列表中，已自动跳过）",
+        "log_staged_tip": "确认下方选项后，点击「开始转换」按钮才会真正转换。",
+        "log_staged_drop": "已就绪的文件与当前任务方向不匹配，已清空，请重新拖入。",
         "log_title": "转换日志",
         "preview_title": "模型预览（背视图实时预览 · 可拖动旋转 / 滚轮缩放）",
         "preview_stats": "拖入任意格式的模型即可实时背视图预览",
@@ -172,7 +194,7 @@ LANG = {
         "ready": "就绪。把 .fbx / .unitypackage 文件拖进上方区域即可。",
         "zoom_changed": "界面缩放：{label}（实际 {pct}%）",
         "log_start": "══ 开始处理 {n} 个文件 ══",
-        "log_done": "══ 完成：成功生成 {n} 个 PMX ══",
+        "log_done": "══ 完成：成功输出 {n} 个文件 ══",
         "log_none": "没有生成任何文件。",
         "status_process": "正在处理 {n} 个文件…",
         "status_done": "完成 · {n} 个文件",
@@ -193,7 +215,7 @@ LANG = {
         "task_vrm2pmx": "VRM → PMX",
         "task_pmx2vrm": "PMX → VRM",
         "task_check": "PMX 僅校驗 + 預覽",
-        "hint_auto": "依副檔名自動判斷：.fbx/.unitypackage→PMX，.vrm→PMX，.pmx→VRM",
+        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM",
         "hint_fbx2pmx": "FBX / unitypackage 轉成 MMD 的 PMX",
         "hint_vrm2pmx": "VRM 0.x / 1.0 轉成 MMD 的 PMX（貼圖會匯出到同目錄）",
         "hint_pmx2vrm": "PMX 轉成 VRM（自動辨識 humanoid 骨骼，缺少的會補佔位骨）",
@@ -220,7 +242,25 @@ LANG = {
         "start": "開始轉換",
         "open_out": "開啟輸出目錄",
         "clear": "清空日誌",
+        "files_title": "已選擇的檔案",
+        "files_count": "{n} 個 · 共 {size}",
+        "files_col_name": "檔案",
+        "files_col_type": "格式",
+        "files_col_size": "大小",
+        "files_remove": "移除選取",
+        "files_clear": "清空清單",
+        "files_tip": "在清單中雙擊檔案可單獨預覽它；拖入新檔案會追加到清單。",
+        "files_sel_none": "請先在清單中選取要移除的檔案（Ctrl / Shift 可多選）。",
+        "files_removed": "已從清單移除 {n} 個檔案（剩餘 {m} 個）。",
+        "files_cleared": "已清空檔案清單。",
+        "drop_more": "已選擇 {n} 個檔案 · 繼續拖入或點擊這裡新增更多",
         "status_wait": "等待檔案…",
+        "status_staged": "已選擇 {n} 個檔案 · 等待開始",
+        "log_staged": "══ 已載入 {n} 個檔案（等待開始）══",
+        "log_staged_add": "══ 追加 {n} 個檔案 · 共 {m} 個（等待開始）══",
+        "log_staged_dup": "（{n} 個檔案已在清單中，已自動略過）",
+        "log_staged_tip": "確認下方選項後，點擊「開始轉換」按鈕才會真正轉換。",
+        "log_staged_drop": "已就緒的檔案與目前任務方向不符，已清空，請重新拖入。",
         "log_title": "轉換日誌",
         "preview_title": "模型預覽（背視圖即時預覽 · 可拖曳旋轉 / 滾輪縮放）",
         "preview_stats": "拖入任意格式的模型即可即時背視圖預覽",
@@ -251,7 +291,7 @@ LANG = {
         "ready": "就緒。把 .fbx / .unitypackage 檔案拖進上方區域即可。",
         "zoom_changed": "介面縮放：{label}（實際 {pct}%）",
         "log_start": "══ 開始處理 {n} 個檔案 ══",
-        "log_done": "══ 完成：成功產生 {n} 個 PMX ══",
+        "log_done": "══ 完成：成功輸出 {n} 個檔案 ══",
         "log_none": "沒有產生任何檔案。",
         "status_process": "正在處理 {n} 個檔案…",
         "status_done": "完成 · {n} 個檔案",
@@ -272,7 +312,7 @@ LANG = {
         "task_vrm2pmx": "VRM → PMX",
         "task_pmx2vrm": "PMX → VRM",
         "task_check": "PMX check + preview only",
-        "hint_auto": "Auto by extension: .fbx/.unitypackage→PMX, .vrm→PMX, .pmx→VRM",
+        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM",
         "hint_fbx2pmx": "Convert FBX / unitypackage into MMD PMX",
         "hint_vrm2pmx": "Convert VRM 0.x / 1.0 into MMD PMX (textures exported alongside)",
         "hint_pmx2vrm": "Convert PMX into VRM (auto-detect humanoid bones, fill missing with placeholders)",
@@ -297,9 +337,27 @@ LANG = {
         "browse": "Browse",
         "outdir_placeholder": "(Output to source file folder)",
         "start": "Start conversion",
-        "open_out": "Open output folder",
-        "clear": "Clear log",
+        "open_out": "Open folder",
+        "clear": "Clear",
+        "files_title": "Selected files",
+        "files_count": "{n} file(s) · {size} total",
+        "files_col_name": "File",
+        "files_col_type": "Format",
+        "files_col_size": "Size",
+        "files_remove": "Remove selected",
+        "files_clear": "Clear list",
+        "files_tip": "Double-click a file in the list to preview it; newly dropped files are appended.",
+        "files_sel_none": "Select files in the list first (Ctrl / Shift to pick several).",
+        "files_removed": "Removed {n} file(s) from the list ({m} left).",
+        "files_cleared": "File list cleared.",
+        "drop_more": "{n} file(s) selected · drop more or click here to add",
         "status_wait": "Waiting for files…",
+        "status_staged": "{n} file(s) ready · not started",
+        "log_staged": "══ Loaded {n} file(s) — waiting to start ══",
+        "log_staged_add": "══ Added {n} more file(s) · {m} total — waiting to start ══",
+        "log_staged_dup": "({n} file(s) already in the list, skipped)",
+        "log_staged_tip": "Review the options below, then click \"Start conversion\" to run.",
+        "log_staged_drop": "Loaded files no longer match the current task direction; cleared. Please drop them again.",
         "log_title": "Conversion log",
         "preview_title": "Model preview (live back view · drag to rotate / wheel to zoom)",
         "preview_stats": "Drop any model format to see a live back view preview",
@@ -330,7 +388,7 @@ LANG = {
         "ready": "Ready. Drop .fbx / .unitypackage files into the area above.",
         "zoom_changed": "UI scale: {label} (actual {pct}%)",
         "log_start": "══ Processing {n} file(s) ══",
-        "log_done": "══ Done: generated {n} PMX file(s) ══",
+        "log_done": "══ Done: wrote {n} file(s) ══",
         "log_none": "No files were generated.",
         "status_process": "Processing {n} file(s)…",
         "status_done": "Done · {n} file(s)",
@@ -351,7 +409,7 @@ LANG = {
         "task_vrm2pmx": "VRM → PMX",
         "task_pmx2vrm": "PMX → VRM",
         "task_check": "PMX 検証＋プレビューのみ",
-        "hint_auto": "拡張子で自動判定：.fbx/.unitypackage→PMX、.vrm→PMX、.pmx→VRM",
+        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM",
         "hint_fbx2pmx": "FBX / unitypackage を MMD の PMX に変換",
         "hint_vrm2pmx": "VRM 0.x / 1.0 を MMD の PMX に変換（テクスチャは同フォルダへ）",
         "hint_pmx2vrm": "PMX を VRM に変換（humanoid ボーン自動判定、欠損はダミー骨で補完）",
@@ -378,7 +436,25 @@ LANG = {
         "start": "変換開始",
         "open_out": "出力フォルダを開く",
         "clear": "ログを消去",
+        "files_title": "選択したファイル",
+        "files_count": "{n} 個 · 合計 {size}",
+        "files_col_name": "ファイル",
+        "files_col_type": "形式",
+        "files_col_size": "サイズ",
+        "files_remove": "選択を削除",
+        "files_clear": "リストをクリア",
+        "files_tip": "リスト内のファイルをダブルクリックすると個別にプレビューできます。新しくドロップしたファイルは追加されます。",
+        "files_sel_none": "先にリストから削除するファイルを選択してください（Ctrl / Shift で複数選択）。",
+        "files_removed": "{n} 個のファイルをリストから削除しました（残り {m} 個）。",
+        "files_cleared": "ファイルリストをクリアしました。",
+        "drop_more": "{n} 個を選択済み · さらにドロップするかここをクリックして追加",
         "status_wait": "ファイル待ち…",
+        "status_staged": "{n} 個を選択済み · 開始待ち",
+        "log_staged": "══ {n} 個のファイルを読み込みました（開始待ち）══",
+        "log_staged_add": "══ {n} 個を追加 · 合計 {m} 個（開始待ち）══",
+        "log_staged_dup": "（{n} 個は既にリストにあるためスキップ）",
+        "log_staged_tip": "下のオプションを確認し、「変換開始」ボタンで変換を実行します。",
+        "log_staged_drop": "読み込み済みのファイルが現在のタスク方向と一致しないため、クリアしました。もう一度ドロップしてください。",
         "log_title": "変換ログ",
         "preview_title": "モデルプレビュー（背面部 リアルタイム・ドラッグで回転／ホイールで拡大）",
         "preview_stats": "任意の形式のモデルをドロップすると背面部が表示されます",
@@ -409,7 +485,7 @@ LANG = {
         "ready": "準備完了。.fbx / .unitypackage を上の領域へドロップしてください。",
         "zoom_changed": "表示倍率：{label}（実際 {pct}%）",
         "log_start": "══ {n} 個のファイルを処理 ══",
-        "log_done": "══ 完了：PMX を {n} 個生成 ══",
+        "log_done": "══ 完了：{n} 個のファイルを出力しました ══",
         "log_none": "ファイルは生成されませんでした。",
         "status_process": "{n} 個のファイルを処理中…",
         "status_done": "完了 · {n} 個",
@@ -748,7 +824,8 @@ def validate_pmx(path):
         wt, ws = v[3], v[5]
         if wt == 0:
             s = 1.0
-        elif wt == 1:
+        elif wt in (1, 3):
+            # BDEF2 / SDEF：只存第 1 根骨骼的权重，另一根是 1-w，和恒为 1
             s = ws[0] + (1.0 - ws[0])
         else:
             s = sum(ws)
@@ -758,6 +835,10 @@ def validate_pmx(path):
     problems = []
     if m["consumed"] != m["filesize"]:
         problems.append("字节数不匹配 %d/%d" % (m["consumed"], m["filesize"]))
+    # MMD 只认 UTF-16LE 的 PMX（原版提示：エンコード方式がUTF16のPMXファイル
+    # しか読み込めません）。编码为 UTF-8 时 MMD 会直接拒绝载入。
+    if m.get("globals") and m["globals"][0] == 1:
+        problems.append("文本编码是 UTF-8，MMD 无法载入（需要 UTF-16LE）")
     if bad_v:
         problems.append("%d 个面引用了不存在的顶点" % bad_v)
     if bad_b:
@@ -830,6 +911,7 @@ class ConverterApp:
         self.q = queue.Queue()
         self.busy = False
         self._pending_files = []
+        self._previewed = None       # 已经送出预览的那个文件，避免重复载入打断视角
         self._drop_event = threading.Event()
         self._pending_drop = None
         self.last_out_dir = None
@@ -862,6 +944,7 @@ class ConverterApp:
         self.zoom = None                      # None = 跟随系统 DPI
         self.dnd_ok = None
         self._split = 0.60                    # 左右分栏比例（预览占右侧 40%）
+        self._vsplit = None                   # 左栏上下比例（None = 按内容自动）
 
         self._load_settings()
         self._build()
@@ -919,14 +1002,74 @@ class ConverterApp:
                                     sashpad=0, handlesize=px(6),
                                     opaqueresize=True)
         self.panes.pack(fill="both", expand=True, pady=(px(12), 0))
-        left = tk.Frame(self.panes, bg=BG)
-        self.panes.add(left, minsize=px(430), stretch="always", width=px(620))
+        leftwrap = tk.Frame(self.panes, bg=BG)
+        self.panes.add(leftwrap, minsize=px(430), stretch="always",
+                       width=px(620))
         right = tk.Frame(self.panes, bg=BG)
         self.panes.add(right, minsize=px(300), stretch="always", width=px(420))
         self._restore_split()
 
+        # ---- 左栏再横切一刀：上段 = 拖放区 / 文件列表 / 选项 / 按钮，下段 = 日志
+        # 为什么必须再切：200% 缩放下上段的自然高度（拖放区 150 + 文件列表 324
+        # + 选项 558 + 按钮行 89 = 1121px）已经接近整窗可用的 1216px，日志再想
+        # 分一杯羹就只能把选项页裁掉。放进 PanedWindow 后上段能保住自己的高度，
+        # 日志拿剩下的，用户还能拖这条横向分割条自己分配（比例记进 config.json）。
+        self.vpanes = tk.PanedWindow(leftwrap, orient="vertical", bg="#d3dae4",
+                                     bd=0, sashwidth=px(10), sashrelief="flat",
+                                     sashpad=0, handlesize=px(6),
+                                     opaqueresize=True)
+        self.vpanes.pack(fill="both", expand=True)
+        top = tk.Frame(self.vpanes, bg=BG)
+        self.vpanes.add(top, minsize=px(300), stretch="always")
+        left = tk.Frame(self.vpanes, bg=BG)          # 下半段：日志
+        self.vpanes.add(left, minsize=px(58), stretch="always")
+
+        # ---- 日志（放在下半段）
+        logbox = tk.Frame(left, bg=CARD, highlightthickness=1,
+                          highlightbackground=BORDER)
+        logbox.pack(fill="both", expand=True)
+        lhead = tk.Frame(logbox, bg=CARD)
+        lhead.pack(fill="x", padx=px(10), pady=(px(8), px(4)))
+        tk.Label(lhead, text=t("log_title"), font=F_BOLD, bg=CARD, fg=TXT,
+                 anchor="w").pack(side="left")
+        # 状态文字放这儿而不是按钮行：高分屏（200% 缩放）下按钮行本来就装不下
+        # 「按钮 + 状态」，实测中文溢出 109px、英文 329px。挂在日志卡片标题右侧
+        # 既不额外占高度，也不会被裁掉。
+        self.lbl_status = tk.Label(lhead, text=t("status_wait"), font=F_SMALL,
+                                   bg=CARD, fg=MUTED)
+        self.lbl_status.pack(side="right")
+        self.txt = tk.Text(logbox, font=F_MONO, bg=CARD, fg=TXT, relief="flat",
+                           wrap="none", height=6, highlightthickness=0,
+                           padx=px(10), pady=px(8), insertbackground=TXT)
+        sb = tk.Scrollbar(logbox, command=self.txt.yview, relief="flat",
+                          bd=0, width=px(14))
+        self.txt.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.txt.pack(fill="both", expand=True)
+        self.txt.tag_configure("info", foreground=MUTED)
+        self.txt.tag_configure("ok", foreground=OK)
+        self.txt.tag_configure("err", foreground=ERR)
+        self.txt.tag_configure("warn", foreground=WARN)
+        self.txt.tag_configure("head", foreground=ACCENT,
+                               font=(FONT, 10, "bold"))
+        self.txt.tag_configure("mono", foreground="#3a4250")
+        self.txt.configure(state="disabled")
+
+        act = tk.Frame(top, bg=BG)
+        act.pack(side="bottom", fill="x", pady=(px(12), 0))
+        self.btn_go = self._btn(act, t("start"), self.start_from_ui,
+                                kind="primary")
+        self.btn_go.pack(side="left")
+        self.btn_open = self._btn(act, t("open_out"), self.open_outdir,
+                                  kind="ghost", padx=px(12))
+        self.btn_open.pack(side="left", padx=(px(8), 0))
+        self.btn_clear = self._btn(act, t("clear"), self.clear_log, kind="ghost",
+                                   padx=px(12))
+        self.btn_clear.pack(side="left", padx=(px(8), 0))
+
         # ---- drop zone
-        self.dz = tk.Canvas(left, height=px(126), bg=CARD, highlightthickness=1,
+        self._dz_h = px(126)          # 拖放区当前高度（有文件时会压扁）
+        self.dz = tk.Canvas(top, height=px(126), bg=CARD, highlightthickness=1,
                             highlightbackground=BORDER, cursor="hand2")
         self.dz.pack(fill="x", pady=(px(12), 0))
         self.dz.bind("<Configure>", lambda e: self._draw_dropzone())
@@ -934,9 +1077,49 @@ class ConverterApp:
         self.dz.bind("<Leave>", lambda e: self._hover(False))
         self.dz.bind("<Button-1>", lambda e: self.browse())
 
+        # ---- 已选择文件列表（拖入后一目了然；空列表时整块隐藏，不占地方）
+        self._files_shown = False
+        self.filecard = tk.Frame(top, bg=CARD, highlightthickness=1,
+                                 highlightbackground=BORDER)
+        fh = tk.Frame(self.filecard, bg=CARD)
+        fh.pack(fill="x", padx=px(10), pady=(px(8), px(2)))
+        tk.Label(fh, text=t("files_title"), font=F_BOLD, bg=CARD,
+                 fg=TXT).pack(side="left")
+        self.lbl_files = tk.Label(fh, text="", font=F_SMALL, bg=CARD, fg=MUTED)
+        self.lbl_files.pack(side="left", padx=(px(8), px(6)), pady=(px(2), 0))
+        self.btn_files_clear = self._btn(fh, t("files_clear"),
+                                         self.clear_files, kind="ghost",
+                                         padx=px(10), pady=px(2))
+        self.btn_files_clear.pack(side="right")
+        self.btn_files_del = self._btn(fh, t("files_remove"),
+                                       self.remove_selected_files,
+                                       kind="ghost", padx=px(10), pady=px(2))
+        self.btn_files_del.pack(side="right", padx=(0, px(6)))
+        ftv = tk.Frame(self.filecard, bg=CARD)
+        ftv.pack(fill="x", padx=px(10), pady=(0, px(8)))
+        self.tv = ttk.Treeview(ftv, columns=("name", "type", "size"),
+                               show="headings", height=6,
+                               style="Files.Treeview", selectmode="extended")
+        self.tv.heading("name", text=t("files_col_name"), anchor="w")
+        self.tv.heading("type", text=t("files_col_type"), anchor="center")
+        self.tv.heading("size", text=t("files_col_size"), anchor="e")
+        self.tv.column("name", width=px(250), minwidth=px(120),
+                       anchor="w", stretch=True)
+        self.tv.column("type", width=px(58), minwidth=px(48),
+                       anchor="center", stretch=False)
+        self.tv.column("size", width=px(78), minwidth=px(64),
+                       anchor="e", stretch=False)
+        tv_sb = ttk.Scrollbar(ftv, orient="vertical", command=self.tv.yview)
+        self.tv.configure(yscrollcommand=tv_sb.set)
+        tv_sb.pack(side="right", fill="y")
+        self.tv.pack(side="left", fill="both", expand=True)
+        self.tv.bind("<Double-1>", self._preview_row)
+        self.tv.bind("<Delete>", lambda e: self.remove_selected_files())
+
         # ---- options（Notebook 分页：为将来加功能预留扩展空间）
-        nb = ttk.Notebook(left)
+        nb = ttk.Notebook(top)
         nb.pack(fill="x", pady=(px(10), 0))
+        self.nb = nb
         self._style_notebook(nb)
 
         # 通用
@@ -1021,41 +1204,6 @@ class ConverterApp:
                                         kind="ghost", padx=px(12), pady=px(4))
         self.btn_browse_out.pack(side="left")
 
-        # ---- actions
-        act = tk.Frame(left, bg=BG)
-        act.pack(fill="x", pady=(px(12), 0))
-        self.btn_go = self._btn(act, t("start"), self.start_from_ui,
-                                kind="primary")
-        self.btn_go.pack(side="left")
-        self.btn_open = self._btn(act, t("open_out"), self.open_outdir,
-                                  kind="ghost")
-        self.btn_open.pack(side="left", padx=(px(8), 0))
-        self.btn_clear = self._btn(act, t("clear"), self.clear_log, kind="ghost")
-        self.btn_clear.pack(side="left", padx=(px(8), 0))
-        self.lbl_status = tk.Label(act, text=t("status_wait"), font=F_SMALL,
-                                   bg=BG, fg=MUTED)
-        self.lbl_status.pack(side="right")
-
-        # ---- 左栏底部：日志（吃掉剩余高度）
-        logbox = self._card(left, t("log_title"))
-        logbox.pack(fill="both", expand=True, pady=(px(10), 0))
-        self.txt = tk.Text(logbox, font=F_MONO, bg=CARD, fg=TXT, relief="flat",
-                           wrap="none", height=14, highlightthickness=0,
-                           padx=px(10), pady=px(8), insertbackground=TXT)
-        sb = tk.Scrollbar(logbox, command=self.txt.yview, relief="flat",
-                          bd=0, width=px(14))
-        self.txt.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        self.txt.pack(fill="both", expand=True)
-        self.txt.tag_configure("info", foreground=MUTED)
-        self.txt.tag_configure("ok", foreground=OK)
-        self.txt.tag_configure("err", foreground=ERR)
-        self.txt.tag_configure("warn", foreground=WARN)
-        self.txt.tag_configure("head", foreground=ACCENT,
-                               font=(FONT, 10, "bold"))
-        self.txt.tag_configure("mono", foreground="#3a4250")
-        self.txt.configure(state="disabled")
-
         # ---- 右栏：模型预览（整列高度，跟 Blender 的 3D 视图区一个位置）
         pvcard = self._card(right, t("preview_title"))
         pvcard.pack(fill="both", expand=True)
@@ -1086,6 +1234,12 @@ class ConverterApp:
         self._toggle_outdir()
         self._pick_scale()
         self._update_hint()
+        self._refresh_files_ui()       # 重建界面后文件列表还在（语言 / 缩放切换）
+        if self._pending_files:
+            # 状态栏也别退回「等待文件」：列表里明明已经有文件了
+            n = len(self._pending_files)
+            self.status(t("status_process", n=n) if self.busy
+                        else t("status_staged", n=n))
         self._draw_dropzone()
         # 分割条位置要等窗口有真实宽度之后才能落到正确的地方
         self.root.after(80, self._poll_split)
@@ -1107,7 +1261,9 @@ class ConverterApp:
             return True
 
     def _poll_split(self, tries=0):
-        if not self._restore_split() and tries < 20:
+        ok = self._restore_split()
+        okv = self._restore_vsplit()
+        if not (ok and okv) and tries < 20:
             self.root.after(60, lambda: self._poll_split(tries + 1))
 
     def _save_split(self):
@@ -1116,6 +1272,52 @@ class ConverterApp:
             x, _y = self.panes.sash_coord(0)
             if total > 1 and x > 0:
                 self._split = min(0.85, max(0.28, x / float(total)))
+        except Exception:
+            pass
+
+    # --------------------------------------------------- 左栏上下分割条 --
+    def _restore_vsplit(self):
+        """恢复（或首次计算）左栏上下分割条的位置。
+
+        默认策略：上段（拖放区 + 文件列表 + 选项 + 按钮）先拿到它需要的高度，
+        日志分剩下的（≥ 110px）。200% 缩放下上段本身就要 1121px，靠这条分割条
+        才能保住选项页不被裁掉；用户拖过之后就按用户的比例来（存 config.json）。
+        """
+        try:
+            total = self.vpanes.winfo_height()
+            if total <= 1:
+                return False
+            self._place_vsplit(total)
+            return True
+        except Exception:
+            return True
+
+    def _place_vsplit(self, total=None):
+        try:
+            total = total or self.vpanes.winfo_height()
+            if total <= 1:
+                return
+            frac = getattr(self, "_vsplit", None)     # 用户拖过 → 用用户的比例
+            if frac:
+                y = int(total * frac)
+            else:
+                need = sum(w.winfo_reqheight() for w in
+                           (self.dz, self.nb, self.btn_go.master))
+                if getattr(self, "_files_shown", False):
+                    need += self.filecard.winfo_reqheight()
+                need += px(70)        # 各块之间的间距 + 分割条自身
+                y = min(need, total - px(58))
+            y = max(px(150), min(y, total - px(58)))
+            self.vpanes.sash_place(0, 0, y)
+        except Exception:
+            pass
+
+    def _save_vsplit(self):
+        try:
+            total = self.vpanes.winfo_height()
+            _x, y = self.vpanes.sash_coord(0)
+            if total > 1 and y > 0:
+                self._vsplit = min(0.92, max(0.15, y / float(total)))
         except Exception:
             pass
 
@@ -1159,7 +1361,8 @@ class ConverterApp:
         try:
             st = ttk.Style()
             try:
-                st.theme_use("clam")
+                if st.theme_use() != "clam":
+                    st.theme_use("clam")
             except Exception:
                 pass
             st.configure("TNotebook", background=BG, borderwidth=0)
@@ -1169,6 +1372,29 @@ class ConverterApp:
             st.map("TNotebook.Tab",
                    background=[("selected", ACCENT), ("active", ACCENT_SOFT)],
                    foreground=[("selected", "#ffffff"), ("active", TXT)])
+            self._style_tree(st)
+        except Exception:
+            pass
+
+    def _style_tree(self, st=None):
+        """文件列表（ttk.Treeview）的白底浅色样式，跟其余控件统一。"""
+        try:
+            st = st or ttk.Style()
+            st.configure("Files.Treeview",
+                         background=CARD, fieldbackground=CARD,
+                         foreground=TXT, font=F_BODY,
+                         rowheight=px(22), borderwidth=0, relief="flat")
+            st.configure("Files.Treeview.Heading",
+                         background="#eef1f5", foreground=MUTED,
+                         font=F_SMALL, relief="flat", borderwidth=0,
+                         padding=(px(4), px(3)))
+            st.map("Files.Treeview",
+                   background=[("selected", ACCENT_SOFT)],
+                   foreground=[("selected", ACCENT_HOVER)])
+            st.map("Files.Treeview.Heading",
+                   background=[("active", "#e4e9f0")])
+            # 布局沿用父样式 Treeview（ttk 的 "Files.Treeview" 会自动继承），
+            # 不用自己拼 element 名，避免拼错时静默失效。
         except Exception:
             pass
 
@@ -1182,19 +1408,30 @@ class ConverterApp:
         bc = BigCheck(parent, text=text, variable=var, command=command,
                       bg=CARD, font=F_BODY)
         bc.pack(anchor="w", padx=px(14),
-                pady=(px(6) if pady is None else pady))
+                pady=(px(4) if pady is None else pady))
         return bc
 
     def _draw_dropzone(self):
         c = self.dz
         c.delete("all")
+        n = len(self._pending_files)
         w = max(c.winfo_width(), px(300))
-        h = max(c.winfo_height(), px(126))
+        # 高度用自己记的意图值（_dz_h）：canvas 高度固定，configure(height=)
+        # 之后 winfo_height() 可能还是旧值，读它会画到框外。
+        h = self._dz_h or (px(74) if n else px(126))
         hot = self._drag_hot
         c.create_rectangle(px(8), px(8), w - px(8), h - px(8),
                            outline=ACCENT if hot else "#ccd4e0",
                            width=max(1, px(2)), dash=(px(8), px(6)),
                            fill=ACCENT_SOFT if hot else "#fbfcfe")
+        if n:
+            # 已经有文件了：拖放区收成一条窄带，把竖向空间让给下面的文件列表
+            c.create_text(px(30), h * 0.5, text="⇩", font=F_ICON2,
+                          fill=ACCENT)
+            c.create_text(px(56), h * 0.5, anchor="w", text=t("drop_more", n=n),
+                          font=F_DROP2,
+                          fill=ACCENT_HOVER if hot else TXT)
+            return
         c.create_text(w / 2, h * 0.30, text="⇩", font=F_ICON,
                       fill=ACCENT)
         c.create_text(w / 2, h * 0.58, text=t("drop_hint"),
@@ -1202,6 +1439,17 @@ class ConverterApp:
         c.create_text(w / 2, h * 0.80,
                       text=t("drop_formats"),
                       font=F_DROP2, fill=MUTED)
+
+    def _set_dz_compact(self, compact):
+        """有文件时把拖放区压扁，让文件列表拿到竖向空间。"""
+        want = px(74) if compact else px(126)
+        if self._dz_h == want:
+            return
+        self._dz_h = want
+        try:
+            self.dz.configure(height=want)
+        except Exception:
+            pass
 
     def _hover(self, state):
         if state != self._drag_hot:
@@ -1275,6 +1523,7 @@ class ConverterApp:
         self._task_code = TASK_BY_LABEL.get(self.var_task.get(), "auto")
         self._save_settings()
         self._update_hint()
+        self._refilter_pending()
 
     def _update_hint(self):
         task = self._task_code
@@ -1362,6 +1611,12 @@ class ConverterApp:
                     self._split = sp
             except Exception:
                 pass
+            try:
+                vs = s.get("vsplit")
+                if vs is not None and 0.15 < float(vs) < 0.95:
+                    self._vsplit = float(vs)
+            except Exception:
+                pass
             self.var_vrm_spec.set(s.get("vrm_spec", "1.0"))
             self.var_morphs.set(bool(s.get("export_morphs", True)))
             self.var_two_sided.set(bool(s.get("force_two_sided", False)))
@@ -1387,6 +1642,10 @@ class ConverterApp:
                 self._save_split()
             except Exception:
                 pass
+            try:
+                self._save_vsplit()
+            except Exception:
+                pass
             with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
                 json.dump({"flip_z": self.var_flipz.get(),
                            "show_bones": self.var_bones.get(),
@@ -1406,7 +1665,8 @@ class ConverterApp:
                            "center": self.var_center.get(),
                            "fbx_morphs": self.var_fbx_morphs.get(),
                            "remove_alpha": self.var_remove_alpha.get(),
-                           "split": getattr(self, "_split", 0.6)},
+                           "split": getattr(self, "_split", 0.6),
+                           "vsplit": getattr(self, "_vsplit", None)},
                           f, ensure_ascii=False, indent=2)
         except Exception:
             pass
@@ -1500,7 +1760,12 @@ class ConverterApp:
         if not self._pending_files:
             messagebox.showinfo(t("msg_title"), t("msg_pick"))
             return
-        self._run(self._pending_files)
+        # 期间可能改过「任务」方向，开跑前按当前方向再筛一次
+        files = self._filter_task(self._pending_files, notify=True)
+        if not files:
+            return
+        self._pending_files = files
+        self._run(files)
 
     # ------------------------------------------------------------- pipeline --
     def _on_drop_files(self, paths):
@@ -1524,8 +1789,18 @@ class ConverterApp:
             self.root.after(60, self._poll_drop)
 
     def accept_paths(self, paths):
+        """拖入 / 选择的文件：只载入并预览，**不自动开始转换**。
+
+        真正的转换只发生在用户点击「开始转换」（start_from_ui）时。
+        """
         if self.busy:
             return
+        files = self._resolve_paths(paths)
+        if files:
+            self._stage(files)
+
+    def _resolve_paths(self, paths):
+        """把拖入的路径（可能含目录）解析成本次任务的待转文件；没有可用文件时返回 []。"""
         task = self._task_code
         files = []
         for p in paths:
@@ -1534,7 +1809,7 @@ class ConverterApp:
             else:
                 files.append(p)
         if not files:
-            return
+            return []
         unknown = [os.path.basename(f) for f in files
                    if classify(f) == "unknown"]
         if unknown:
@@ -1543,19 +1818,213 @@ class ConverterApp:
                                      files="\n".join(unknown[:5])))
             files = [f for f in files if classify(f) != "unknown"]
         if not files:
+            return []
+        return self._filter_task(files, notify=True)
+
+    def _filter_task(self, files, notify=True):
+        """按当前任务方向过滤文件（auto = 不筛）。"""
+        task = self._task_code
+        if task == "auto":
+            return list(files)
+        # 指定了方向就只挑对应扩展名的文件
+        want = {"fbx2pmx": ("fbx", "unitypackage"),
+                "vrm2pmx": ("vrm",),
+                "pmx2vrm": ("pmx",),
+                "check": ("pmx",)}[task]
+        keep = [f for f in files if classify(f) in want]
+        if not keep and notify:
+            messagebox.showinfo(t("msg_title"), t("msg_mismatch"))
+        return keep
+
+    def _merge_files(self, files):
+        """把新文件并进待转列表（按规范化绝对路径去重），返回真正新增的那些。"""
+        seen = set()
+        for f in self._pending_files:
+            seen.add(os.path.normcase(os.path.abspath(f)))
+        added = []
+        for f in files:
+            key = os.path.normcase(os.path.abspath(f))
+            if key in seen:
+                continue
+            seen.add(key)
+            added.append(f)
+        if added:
+            self._pending_files = list(self._pending_files) + added
+        return added
+
+    # ------------------------------------------------------- 文件列表 UI --
+    def _refresh_files_ui(self):
+        """把待转文件同步到列表控件；没有文件时整块隐藏。"""
+        files = self._pending_files
+        n = len(files)
+        total = 0
+        for f in files:
+            try:
+                total += os.path.getsize(f)
+            except OSError:
+                pass
+        self.lbl_files.configure(
+            text=(t("files_count", n=n, size=human(total)) if n else ""))
+        # 同名文件（来自不同目录）补上上级目录名，避免看不出区别
+        names = {}
+        for f in files:
+            b = os.path.basename(f)
+            names[b] = names.get(b, 0) + 1
+        kids = self.tv.get_children()
+        if kids:
+            self.tv.delete(*kids)
+        # 行数跟着文件数走（2~5 行），文件少时不留一片空行白占竖向空间
+        try:
+            self.tv.configure(height=max(2, min(5, n)))
+        except Exception:
+            pass
+        for i, f in enumerate(files):
+            b = os.path.basename(f)
+            if names.get(b, 0) > 1:
+                b = os.path.join(os.path.basename(os.path.dirname(f)), b)
+            try:
+                size = human(os.path.getsize(f))
+            except OSError:
+                size = "—"
+            kind = classify(f)
+            self.tv.insert("", "end", iid=str(i),
+                           values=(b, KIND_LABEL.get(kind, kind.upper()),
+                                   size))
+        if n and not self._files_shown:
+            self.filecard.pack(fill="x", pady=(px(8), 0), before=self.nb)
+            self._files_shown = True
+            # 新出现的控件（文件列表 / 滚动条）也要能被拖入，
+            # 等它建好原生窗口后补挂一次（_dnd_topup 只挂没挂过的）
+            self.root.after(80, self._dnd_topup)
+        elif not n and self._files_shown:
+            self.filecard.pack_forget()
+            self._files_shown = False
+        self._set_dz_compact(bool(n))
+        self._draw_dropzone()
+        # 文件列表一出一进，上段需要的高度差 200 多像素，自动重排一次
+        # （用户自己拖过分割条就不动了，尊重用户的选择）
+        if not getattr(self, "_vsplit", None):
+            self._place_vsplit()
+
+    def remove_selected_files(self):
+        """移除列表里选中的文件（Ctrl / Shift 可多选）。"""
+        if self.busy or not self._pending_files:
             return
-        if task != "auto":
-            # 指定了方向就只挑对应扩展名的文件
-            want = {"fbx2pmx": ("fbx", "unitypackage"),
-                    "vrm2pmx": ("vrm",),
-                    "pmx2vrm": ("pmx",),
-                    "check": ("pmx",)}[task]
-            files = [f for f in files if classify(f) in want]
-            if not files:
-                messagebox.showinfo(t("msg_title"), t("msg_mismatch"))
-                return
-        self._pending_files = files
-        self._run(files)
+        try:
+            idx = sorted(int(i) for i in self.tv.selection())
+        except Exception:
+            idx = []
+        if not idx:
+            self.log(t("files_sel_none"), "info")
+            return
+        gone = {self._pending_files[i] for i in idx}
+        drop = set(idx)
+        self._pending_files = [f for i, f in enumerate(self._pending_files)
+                               if i not in drop]
+        if self._previewed in gone:
+            self._previewed = None
+        self.log(t("files_removed", n=len(idx), m=len(self._pending_files)),
+                 "info")
+        self._after_files_changed()
+
+    def clear_files(self):
+        """清空待转列表（连预览一起清掉）。"""
+        if self.busy or not self._pending_files:
+            return
+        self._pending_files = []
+        self._previewed = None
+        self._clear_preview()
+        self.log(t("files_cleared"), "info")
+        self._after_files_changed()
+
+    def _clear_preview(self):
+        try:
+            self.pv.set_mesh(None)
+        except Exception:
+            pass
+        try:
+            self.lbl_stats.configure(text=t("preview_stats"))
+        except Exception:
+            pass
+
+    def _after_files_changed(self):
+        """列表被手工改过之后：刷新 UI + 状态栏，必要时换预览对象。"""
+        self._refresh_files_ui()
+        n = len(self._pending_files)
+        if not n:
+            self.status(t("status_wait"))
+            return
+        self.status(t("status_staged", n=n))
+        # 还留着文件就把预览切到（新的）第一个；_previewed 没被删时这里会自己跳过
+        self._kick_preview(self._preview_sources(self._pending_files))
+
+    def _preview_row(self, event=None):
+        """双击列表某一行 → 只预览这个文件。"""
+        iid = self.tv.identify_row(event.y) if event is not None else ""
+        if not iid:
+            sel = self.tv.selection()
+            iid = sel[0] if sel else ""
+        try:
+            path = self._pending_files[int(iid)]
+        except (ValueError, IndexError, TypeError):
+            return
+        if not os.path.isfile(path):
+            return
+        self._previewed = None
+        self._kick_preview([path], force=True)
+
+    def _stage(self, files):
+        """文件已就绪：入列表 + 出预览 + 提示，等用户点「开始转换」。
+
+        拖入新文件是**追加**（按绝对路径去重，重复的自动跳过），列表里的条目
+        可以单独移除或整体清空；真正的转换只发生在点「开始转换」时。
+        """
+        added = self._merge_files(files)
+        if not added:
+            self.log(t("log_staged_dup", n=len(files)), "info")
+            self.status(t("status_staged", n=len(self._pending_files)))
+            return
+        n_all = len(self._pending_files)
+        had_prior = n_all > len(added)
+        self._refresh_files_ui()
+        # 预览刚拖进来的第一个文件，用户能立刻确认拖对了没；
+        # 新文件都没法预览时退回列表第一个，别让预览空着。
+        self._kick_preview(self._preview_sources(added)
+                           or self._preview_sources(self._pending_files))
+        self.status(t("status_staged", n=n_all))
+        self.log("")
+        if had_prior:
+            self.log(t("log_staged_add", n=len(added), m=n_all), "head")
+        else:
+            self.log(t("log_staged", n=n_all), "head")
+        for p in added:
+            self.log("   " + p, "ok")
+        if len(added) < len(files):
+            self.log(t("log_staged_dup", n=len(files) - len(added)), "info")
+        self.log(t("log_staged_tip"), "info")
+        if not had_prior:
+            self.log(t("files_tip"), "info")
+
+    def _refilter_pending(self):
+        """任务方向变了：把已就绪的文件按新方向重筛一遍。"""
+        if not self._pending_files:
+            return
+        keep = self._filter_task(self._pending_files, notify=False)
+        if keep == self._pending_files:
+            return
+        if keep:
+            self._pending_files = keep
+            self._previewed = None
+            self._refresh_files_ui()
+            self._kick_preview(keep)
+            self.status(t("status_staged", n=len(keep)))
+        else:
+            self._pending_files = []
+            self._previewed = None
+            self._refresh_files_ui()
+            self._clear_preview()
+            self.status(t("status_wait"))
+            self.log(t("log_staged_drop"), "warn")
 
     def _snapshot_cfg(self):
         if self.var_scale_auto.get():
@@ -1593,7 +2062,7 @@ class ConverterApp:
         self.status(t("status_process", n=len(files)))
         self.log("")
         self.log(t("log_start", n=len(files)), "head")
-        # 先把第一个文件渲染成背视图，进转换前就能看到模型
+        # 预览通常在选择文件时就已经出过了；这里只是兜底（例如首帧被跳过）
         self._kick_preview(files)
         thr = threading.Thread(target=self._worker, args=(files, cfg),
                                daemon=True)
@@ -1843,16 +2312,22 @@ class ConverterApp:
                 out.append(f)
         return out
 
-    def _kick_preview(self, files):
-        """转换开始前先把第一个文件的背视图显示出来（实时反馈）。
+    def _kick_preview(self, files, force=False):
+        """把第一个文件的背视图显示出来（实时反馈，不做任何转换）。
 
         对 VRM / PMX 这类可能内嵌大量贴图的格式，先以“基色”立刻出背视图，
         再在后台线程解码贴图、到位后只重绘（不打断用户视角）——保证拖入即见。
+
+        force=False 时，若这个文件已经预览过就不再重载：点「开始转换」不该把
+        用户刚转好的视角复位。
         """
         srcs = self._preview_sources(files)
         if not srcs:
             return
         first = srcs[0]
+        if not force and first == self._previewed:
+            return
+        self._previewed = first
         kind = model_preview.classify(first)
 
         def job():
@@ -1866,7 +2341,11 @@ class ConverterApp:
                     mesh = model_preview.load_preview(first)
                     self.q.put(("mesh", mesh, first))
             except Exception as e:
-                self.q.put(("log", "预览失败：%s" % e, "warn"))
+                # 失败就把“已预览”标记撤回，下次（例如点开始转换时）还能再试
+                if self._previewed == first:
+                    self._previewed = None
+                self.q.put(("log", "预览失败：%s: %s"
+                            % (type(e).__name__, e), "warn"))
         threading.Thread(target=job, daemon=True).start()
 
     def _rerender(self):

@@ -29,6 +29,8 @@
   缺失只影響貼圖解碼速度與部分預覽，不影響主流程。
 - **拖放即用**：走 Windows 原生 `WM_DROPFILES`，視窗任意位置都能拖，無需
   tkinterdnd2 之類的第三方函式庫。
+- **待轉檔案清單**：拖入後拖放區下方列出 檔名 / 格式 / 大小 與總大小，可追加、
+  單選移除、雙擊單獨預覽；**看清單就知道這次要轉什麼**，不點「開始轉換」不動手。
 - **即時背視圖預覽**：拖入模型即可看到 3D 背視圖，可拖動旋轉 / 滾輪縮放，
   可疊加骨骼點檢查對齊。
 - **多語言介面**：右上角可切換 簡體中文 / 繁體中文 / English / 日本語，選擇記憶到設定。
@@ -85,8 +87,14 @@ Model-to-PMX/
 
 1. 輸入執行 `python main.py`
 2. 把 `.fbx` / `.unitypackage` / `.vrm` / `.pmx` 檔案**拖進視窗任意位置**，或點擊拖放區選擇檔案。
-1. 「任務」下拉框可手動指定轉換方向，預設依副檔名自動判斷。
-2. 轉換結果與日誌在左下，模型預覽是右欄整列。
+   **拖入只會載入 + 出預覽，不會自動轉換**；確認任務方向與選項後，點「開始轉換」才會真正執行。
+3. 拖放區下方會出現**已選擇的檔案清單**（檔名 / 格式 / 大小），一眼就能看清這次要轉哪些：
+   - 繼續拖入是**追加**到清單，重複的檔案依絕對路徑自動去重；
+   - 雙擊清單裡的某一列 → 單獨預覽那個檔案；
+   - 選取數列後點「移除選取」（或按 Delete），或點「清空清單」重新來過；
+   - 清單裡有檔案時，拖放區會收成一條窄帶，把縱向空間讓給清單。
+4. 「任務」下拉框可手動指定轉換方向，預設依副檔名自動判斷。切換任務後，已就緒的檔案會依新方向重新篩選（清單同步更新）。
+5. 轉換結果與日誌在左下，模型預覽是右欄整列。
 
 介面要點：
 
@@ -136,6 +144,10 @@ python convert/vrm2pmx.py "model.vrm" -o "model.pmx"
 # PMX 校驗 + 產生預覽圖
 python convert/pmx_check.py "model.pmx"
 python convert/pmx_check.py "model.pmx" --bones   # 疊加骨骼位置
+
+# 把 PMX 的文字編碼改成 MMD 能讀的 UTF-16LE（修復舊檔案用）
+python formats/pmxio.py "model.pmx"               # 輸出 model_utf16.pmx
+python formats/pmxio.py "model.pmx" --in-place    # 直接覆蓋（建議先備份）
 ```
 
 #### 常用參數速查
@@ -244,6 +256,18 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 - **材質效果**：球諧貼圖（.sph/.spa）、toon 貼圖在 VRM 側不保留。
 - **骨骼名**：FBX 轉換保留英文骨骼名（`Hips`、`Spine` …），直接套 MMD 現成動作（.vmd）匹配不上，需在 PMXEditor 裡批次改為日文標準名。
 - **表情**：源模型沒有 BlendShape / morph 時，PMX 表情也為 0，需手工建。
+
+### MMD 提示無法載入（編碼問題）
+
+MMD **只接受文字編碼為 UTF-16LE 的 PMX**。程式內的原版提示是
+`MMDではエンコード方式がUTF16のPMXファイルしか読み込めません`
+（英文：`MMD can't read UTF8 encorded PMX. Please exchange it to UTF16.`）。
+中文漢化版譯成「MMD不能載入編碼為UTF16的PMX文件」，**屬於翻譯錯誤，意思正好相反** ——
+看到這句話時，真正的原因是檔案存成了 UTF-8。
+
+本工具輸出的 PMX 一律為 UTF-16LE。舊版匯出的檔案可用
+`python formats/pmxio.py "舊檔.pmx"` 修復；介面的驗證日誌也會直接提示
+`文本编码是 UTF-8，MMD 无法载入（需要 UTF-16LE）`。
 
 ### 拖放相關
 

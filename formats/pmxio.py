@@ -41,6 +41,14 @@ FLOAT = "f"
 WEIGHT_BONES = {0: 1, 1: 2, 2: 4, 3: 2, 4: 4}
 WEIGHT_FLOATS = {0: 0, 1: 1, 2: 4, 3: 1, 4: 4}
 
+# PMX 头部的文本编码取值：0 = UTF-16LE，1 = UTF-8。
+# MMD 本体只认 0（原版提示「エンコード方式がUTF16のPMXファイルしか読み込めません」，
+# 汉化版误译成「不能载入编码为UTF16的PMX文件」，其实意思正好相反）。
+# PMX Editor / mmd_tools 也都默认写 0，所以输出一律用 UTF-16LE。
+ENC_UTF16 = 0
+ENC_UTF8 = 1
+MMD_ENC = ENC_UTF16
+
 
 # ------------------------------------------------------------------ reader --
 class _R:
@@ -421,7 +429,7 @@ def write_pmx(model, path):
     ri = _isize(max(len(m.get("rigid_bodies") or []), 1) + 1)
 
     w = _W()
-    enc = m.get("enc", 1)
+    enc = m.get("enc", MMD_ENC)
     add_uv = m.get("add_uv", 0)
     w.buf += b"PMX "
     w.f32(m.get("version", 2.0))
@@ -702,7 +710,7 @@ def detect_winding(positions, normals, faces, sample=4000):
 # ------------------------------------------------------------- 空模型工具 --
 def new_model(name="Model"):
     return {
-        "version": 2.0, "enc": 1, "add_uv": 0,
+        "version": 2.0, "enc": MMD_ENC, "add_uv": 0,
         "name": name, "name_en": name, "comment": "", "comment_en": "",
         "vertices": [], "faces": [], "textures": [], "materials": [],
         "bones": [], "morphs": [], "frames": [],
@@ -730,3 +738,56 @@ def strip_edges(model, force_double_sided=True):
         ec[3] = 0.0
         mm["edge_color"] = tuple(ec)
     return model
+
+
+# ------------------------------------------------------- 文本编码转换工具 --
+def convert_encoding(src, dst=None, enc=MMD_ENC, verbose=True):
+    """把已有 PMX 的文本编码改成 enc（默认 UTF-16LE —— MMD 唯一认的编码）。
+
+    用于修复早先版本导出的 UTF-8 PMX：MMD 会报
+    「MMDではエンコード方式がUTF16のPMXファイルしか読み込めません」而拒绝载入。
+    不传 dst 时写到同目录的 "<名字>_utf16.pmx"（不覆盖原文件）。
+    返回 (输出路径, 字节数)。
+    """
+    model = read_pmx(src)
+    old = model.get("enc", ENC_UTF8)
+    model["enc"] = enc
+    if dst is None:
+        stem, _ext = os.path.splitext(src)
+        dst = stem + ("_utf16.pmx" if enc == ENC_UTF16 else "_utf8.pmx")
+    tmp = dst + ".tmp"
+    n = write_pmx(model, tmp)
+    # 回读校验：能完整解析、名称一致才认账，避免把文件改坏
+    back = read_pmx(tmp)
+    if back["name"] != model["name"] or back["consumed"] != back["filesize"]:
+        os.remove(tmp)
+        raise ValueError("改写后回读校验失败，已放弃：%s" % src)
+    os.replace(tmp, dst)
+    if verbose:
+        print("%-40s 编码 %d(%s) -> %d(%s)  %.2f MB" % (
+            os.path.basename(src), old, "UTF-8" if old else "UTF-16LE",
+            enc, "UTF-8" if enc else "UTF-16LE", n / 1048576.0))
+    return dst, n
+
+
+if __name__ == "__main__":
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        description="把 PMX 的文本编码改成 MMD 能读的那种（默认 UTF-16LE）")
+    ap.add_argument("files", nargs="+", help="要处理的 .pmx")
+    ap.add_argument("--enc", choices=("utf16", "utf8"), default="utf16",
+                    help="目标编码，默认 utf16（MMD 只认这个）")
+    ap.add_argument("-o", "--out", default=None, help="输出路径（仅限单个输入）")
+    ap.add_argument("--in-place", action="store_true",
+                    help="直接覆盖原文件（危险，建议先备份）")
+    a = ap.parse_args()
+    if a.out and len(a.files) > 1:
+        ap.error("-o 只能配合单个输入文件使用")
+
+    want = ENC_UTF16 if a.enc == "utf16" else ENC_UTF8
+    for p in a.files:
+        try:
+            convert_encoding(p, a.out or (p if a.in_place else None), want)
+        except Exception as e:
+            print("失败 %s：%s" % (p, e))

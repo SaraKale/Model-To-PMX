@@ -834,9 +834,11 @@ def mesh_from_fbx(path, flip_z=True, log=None, with_textures=True):
     # 材质 → 颜色 / 贴图
     def mat_info(mat_id):
         if mat_id is None:
-            return {"color": (200, 195, 190), "tex": None, "name": ""}
+            return {"color": (200, 195, 190), "tex": None, "alpha": 1.0,
+                    "name": ""}
         node = scene.byid.get(mat_id)
         col = (204, 204, 204)
+        alpha = 1.0
         if node is not None:
             d = scene._props70(node)
             for key in ("DiffuseColor", "Diffuse"):
@@ -845,7 +847,23 @@ def mesh_from_fbx(path, flip_z=True, log=None, with_textures=True):
                     col = (max(0, min(255, int(float(v[0]) * 255))),
                            max(0, min(255, int(float(v[1]) * 255))),
                            max(0, min(255, int(float(v[2]) * 255))))
+                    if len(v) > 3:
+                        try:
+                            alpha = float(v[3])
+                        except (TypeError, ValueError):
+                            alpha = 1.0
                     break
+            # FBX 也常用 TransparencyFactor 表达不透明度（1 = 全透明）
+            if alpha >= 1.0:
+                tf = d.get("TransparencyFactor")
+                if tf:
+                    try:
+                        alpha = 1.0 - float(tf[0])
+                    except (TypeError, ValueError, IndexError):
+                        pass
+        if not (alpha == alpha):          # NaN
+            alpha = 1.0
+        alpha = 0.0 if alpha < 0.0 else (1.0 if alpha > 1.0 else alpha)
         img = None
         if with_textures:
             for tid in scene.texture_materials.get(mat_id, []):

@@ -86,12 +86,22 @@ def read_pmx(path):
             for _ in range(4):
                 r.f32()
         wt = r.u8()
-        nb = {0: 1, 1: 2, 2: 4, 3: 2, 4: 4}[wt]
+        nb = {0: 1, 1: 2, 2: 4, 3: 2, 4: 4}.get(wt)
+        if nb is None:
+            raise ValueError("顶点 %d 的变形类型字节 %d 非法（文件解析失步）"
+                             % (len(verts), wt))
         bones = [r.idx(bi_s) for _ in range(nb)]
         nw = {0: 0, 1: 1, 2: 4, 3: 1, 4: 4}[wt]
         ws = [r.f32() for _ in range(nw)]
+        # SDEF(3) 在权重之后还有 C / R0 / R1 三个 vec3 —— 漏读会让后面
+        # 所有顶点全部错位（表现为 wt 读到 'K'=75 之类的天书字节）。
+        sdef = None
+        if wt == 3:
+            sdef = ((r.f32(), r.f32(), r.f32()),
+                    (r.f32(), r.f32(), r.f32()),
+                    (r.f32(), r.f32(), r.f32()))
         r.f32()  # edge scale
-        verts.append(((px, py, pz), (nx, ny, nz), (u, v), wt, bones, ws))
+        verts.append(((px, py, pz), (nx, ny, nz), (u, v), wt, bones, ws, sdef))
     out["vertices"] = verts
     if os.environ.get("PMX_DEBUG"):
         print("[dbg] after verts   p=%d" % r.p)
@@ -388,6 +398,14 @@ def main():
     m = read_pmx(a.pmx)
     print("file      : %s" % a.pmx)
     print("version   : %.1f   globals=%s" % (m["version"], m["globals"]))
+    enc = m["globals"][0] if m.get("globals") else -1
+    if enc == 0:
+        print("encoding  : UTF-16LE  （MMD 可载入）")
+    elif enc == 1:
+        print("encoding  : UTF-8  ← MMD 无法载入这种 PMX，"
+              "需要转成 UTF-16LE（pmxio.py 可以直接转）")
+    else:
+        print("encoding  : 未知取值 %d" % enc)
     print("name      : %s / %s" % (m["name"], m["name_en"]))
     print("vertices  : %d" % len(m["vertices"]))
     print("faces     : %d indices = %d triangles" % (len(m["faces"]), len(m["faces"]) // 3))
@@ -417,7 +435,7 @@ def main():
         wt, ws = v[3], v[5]
         if wt == 0:
             s = 1.0
-        elif wt == 1:                      # BDEF2: w1 + (1 - w1)
+        elif wt in (1, 3):                 # BDEF2 / SDEF: w1 + (1 - w1)
             s = ws[0] + (1.0 - ws[0])
         else:                              # BDEF4 / QDEF
             s = sum(ws)

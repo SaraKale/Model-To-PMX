@@ -612,6 +612,8 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
     model["morphs"] = pmx_morphs
     model["frames"] = frames
 
+    if not enable_edge:
+        pmxio.strip_edges(model, force_double_sided=False)
     size = pmxio.write_pmx(model, pmx_path)
     _l("已写出 %s（%.2f MB）· 骨骼 %d · 材质 %d"
        % (os.path.basename(pmx_path), size / 1048576.0, len(pmx_bones),
