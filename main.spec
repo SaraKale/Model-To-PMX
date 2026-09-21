@@ -11,7 +11,11 @@ a = Analysis(
     binaries=[],
     datas=[],
     hiddenimports=['fbx2pmx', 'pmx_check', 'pmx2vrm', 'vrm2pmx', 'preview',
-                   'unitypackage_unpack', 'fbx_reader', 'pmxio', 'vrmio'],
+                   'unitypackage_unpack', 'fbx_reader', 'pmxio', 'vrmio',
+                   # UEFormat（.uemodel）双向转换 + ASCII FBX 写出器
+                   'uemodel2pmx', 'pmx2uemodel', 'uemodelio', 'fbxout',
+                   # 解压 ZSTD 压缩体（.uemodel 运行期懒加载）
+                   'zstandard'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -27,6 +31,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name='ModelConvert.exe',
+    icon='图标2.ico',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

@@ -435,6 +435,43 @@ def _read_collision(h, version):
     return col
 
 
+def _decompress_body(r, src):
+    """读取压缩体头部并解压，返回未压缩的字节流（分块流）。
+
+    支持 UEFormat 已用到的两种压缩：ZSTD（需 zstandard 第三方库）、
+    GZIP（标准库 gzip）。压缩体头部布局见 parse_uemodel 中的说明。
+    """
+    import io
+    cfmt = (r.fstr() or "").upper()
+    uncompressed = r.i32()
+    compressed = r.i32()
+    payload = r.bytes(compressed) if compressed > 0 else r.left()
+
+    if cfmt == "ZSTD":
+        try:
+            import zstandard as zstd
+        except ImportError:
+            raise ValueError("该 .uemodel 是 ZSTD 压缩体，但运行环境缺少 zstandard 库，"
+                             "无法解压：%s" % src)
+        dctx = zstd.ZstdDecompressor()
+        try:
+            if uncompressed > 0:
+                return dctx.decompress(payload, uncompressed)
+            # 帧内未记录原始大小：改用流式解压读完整帧
+            with dctx.stream_reader(io.BytesIO(payload)) as reader:
+                return reader.read()
+        except Exception as e:
+            raise ValueError("ZSTD 解压失败：%s（%s）" % (src, e))
+    elif cfmt in ("GZIP", "GZIPSTREAM"):
+        import gzip
+        try:
+            return gzip.decompress(payload)
+        except Exception as e:
+            raise ValueError("GZIP 解压失败：%s（%s）" % (src, e))
+    else:
+        raise ValueError("不支持的压缩格式 %r：%s" % (cfmt, src))
+
+
 def read_uemodel(path, verbose=False):
     """读 .uemodel。返回 UEModel；末尾字节数不符直接抛 ValueError。"""
     with open(path, "rb") as f:
@@ -454,14 +491,19 @@ def parse_uemodel(data, verbose=False, src=""):
     if m.version >= V_ATTR_RESTRUCTURE:
         m.path = r.fstr()          # v10 起才有 ObjectPath
     m.compressed = r.bool()
+    if m.compressed:
+        # 压缩体头部紧跟在 bIsCompressed 之后（UEFormat 规范）：
+        #   FString CompressionFormat + i32 UncompressedSize
+        #   + i32 CompressedSize + CompressedData
+        # 解压后得到的就是未压缩的「分块流」，从偏移 0 起按普通流程解析即可。
+        raw = _decompress_body(r, src)
+        r = _R(raw)
 
     if m.identifier not in ("UEMODEL", ""):
         raise ValueError("不是模型文件（Identifier=%r）：%s" % (m.identifier, src))
     if m.version > VERSION_LATEST:
         raise ValueError("UEFormat 版本 %d 高于本库支持的 %d：%s"
                          % (m.version, VERSION_LATEST, src))
-    if m.compressed:
-        raise ValueError("该 .uemodel 是压缩体（GZIP/ZSTD），暂不支持：%s" % src)
 
     ver = _repair_version(m.version)
     for name, arr, pl in _chunks(r, ver):
