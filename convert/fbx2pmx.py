@@ -23,13 +23,29 @@ Usage:
     python fbx2pmx.py "model.fbx" -o "model.pmx"
     python fbx2pmx.py "model.fbx" --info
     python fbx2pmx.py "model.fbx" --no-morphs     # skip blend shapes
-    python fbx2pmx.py "model.fbx" --remove-alpha  # drop the alpha channel of textures
+    python fbx2pmx.py "model.fbx" --alpha auto    # per-texture alpha decision
+    python fbx2pmx.py "model.fbx" --keep-untextured-meshes
 
-Texture alpha: game FBX textures almost always carry an alpha channel.  Pass
-``--remove-alpha`` to write the copied images as opaque RGB (alpha dropped),
-which avoids MMD showing unwanted transparency on clothes/hair.  Stripping is
-done with Pillow when available, otherwise with a small built-in PNG/TGA
-reader so the feature still works in a pure-stdlib environment.
+Texture alpha (``--alpha``): MMD uses the **texture alpha channel as material
+transparency**, and game textures often store something else there.  Three
+modes: ``keep`` (copy as-is), ``strip`` (always drop the alpha channel),
+``auto`` (default - decide per image, see :func:`decide_alpha`).  Stripped
+copies are written as ``<name>_noalpha.<ext>`` so the original is never
+touched.  ``--remove-alpha`` is kept as a legacy alias for ``--alpha strip``.
+
+Facing (``--no-auto-facing`` / ``--face-180``): FBX has no "which way does the
+character look" field, and MMD always wants the model to face -Z.  Because the
+Z negation below already turns a +Z-facing model into a -Z-facing one, only
+models authored facing -Z need an extra 180 degree turn.  That is decided per
+file by :func:`detect_forward_turn` (toe bones, then face-mesh centroid).
+
+Untextured meshes (``--keep-untextured-meshes``): meshes that carry **no
+material at all** are dropped by default.  Game exports (Unity / HoYo style)
+often ship a sheet named ``EffectMesh`` - no material node, no texture, UVs
+spread over the whole atlas, geometry a thin plate spanning the body.  Exported
+as a normal mesh it becomes an opaque grey slab sitting on top of the dress,
+which looks exactly like "the texture got flipped" in MMD.  Pass
+``--keep-untextured-meshes`` to keep them anyway.
 """
 import argparse
 import math
@@ -38,8 +54,191 @@ import shutil
 import struct
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 让 `python convert/fbx2pmx.py ...` 也能直接跑：脚本自己所在目录（convert/）和同级的
+# formats/ 都要进 sys.path。以前这里只加了 convert/，于是 `import pmxio` 之类会
+# ModuleNotFoundError —— 而 README 里给的命令行用法就是这么调的。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _p in (_HERE, os.path.join(os.path.dirname(_HERE), "formats")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 import fbx_reader as fbx
+
+
+# --------------------------------------------------- 贴图 alpha / 朝向 ------
+#
+# 这一段是 PEPlugins-FBXimport（C# 插件）里两个修复的 Python 移植，
+# 原始判据见 PEPlugins-FBXimport\FbxImporterPlugin\TextureAlphaStripper.cs
+# 与 FbxReader.cs 的 DetectForwardTurn / LooksLikeToe / LooksLikeFace。
+# 两边的常量、阈值、名字特征刻意保持一致，改一边要同步另一边。
+
+ALPHA_KEEP = "keep"          # 原样保留 alpha
+ALPHA_AUTO = "auto"          # 逐张贴图判一次（默认）
+ALPHA_STRIP = "strip"        # 一律去掉 alpha
+ALPHA_MODES = (ALPHA_KEEP, ALPHA_AUTO, ALPHA_STRIP)
+
+ALPHA_NOALPHA_SUFFIX = "_noalpha"   # 去 alpha 副本的后缀；改了要同步 README
+
+ALPHA_TRANSPARENT_BELOW = 8     # alpha 低于它算「全透明」
+ALPHA_OPAQUE_ABOVE = 250        # alpha 大于等于它算「实心」
+ALPHA_MOSTLY_EMPTY = 0.75       # 「几乎全是全透明」的下限
+ALPHA_ALMOST_NO_SOLID = 0.05    # 「几乎没有实心像素」的上限
+ALPHA_MAX_SAMPLES = 4000        # 每张贴图最多采样多少个 UV
+
+# 没有 UV 时更保守：要求「几乎全空」才敢去
+ALPHA_NOUV_EMPTY = 0.9
+ALPHA_NOUV_SOLID = 0.01
+
+
+def alpha_mode_of(value, legacy_remove_alpha=None):
+    """把界面/配置里拿到的值归一成三个 alpha 模式之一。
+
+    ``legacy_remove_alpha`` 供旧配置的布尔键 ``remove_alpha`` 兜底：
+    True -> "auto"（旧行为是「一律去 alpha」，正是要修的那个；迁移到自动判定
+    既保留「要去掉遮罩型 alpha」的意图，又不会再把真透明贴图一起削掉），
+    False -> "keep"。
+
+    ⚠ **两边都没给（``None``/``None``）时返回 "auto"**，这才是新默认。
+    所以调用方**不要**把 ``remove_alpha`` 的默认值写成 ``False`` —— 那会被
+    当成「用户显式要 keep」，把 auto 默认遮蔽掉（`convert()` /
+    ``--remove-alpha`` 都踩过这个坑，已改成 None）。
+    """
+    if isinstance(value, str) and value.lower() in ALPHA_MODES:
+        return value.lower()
+    if isinstance(value, bool):
+        return ALPHA_AUTO if value else ALPHA_KEEP
+    if legacy_remove_alpha is not None:
+        return ALPHA_AUTO if legacy_remove_alpha else ALPHA_KEEP
+    return ALPHA_AUTO
+
+
+def looks_like_toe(name):
+    """脚尖骨的名字特征（刻意排除 ToeTwist / ToeNub 这类不是尖端的骨）。
+
+    与 C# 的 LooksLikeToe 逐字一致：只排除 toetip / toe_nub / toeend /
+    toetwist 这几个写法，``Toe0Nub`` 这种驼峰串不会被排除 —— 保持与已验证
+    版本相同的行为，免得两边判据分叉。
+    """
+    if not name:
+        return False
+    low = name.lower()
+    if any(t in low for t in ("toetip", "toe_nub", "toeend", "toetwist")):
+        return False
+    return ("toe" in low or "つま先" in name or "爪先" in name or "ball" in low)
+
+
+def looks_like_face(name):
+    """「一定长在正面」的网格名特征：脸 / 眼 / 瞳 / 眉 / 睫 / 嘴 / 鼻。"""
+    if not name:
+        return False
+    low = name.lower()
+    if any(t in low for t in ("face", "eye", "pupil", "iris", "brow", "lash",
+                              "mouth", "nose", "lip")):
+        return True
+    return any(t in name for t in ("顔", "脸", "臉", "眼", "瞳", "眉", "睫",
+                                   "口", "鼻"))
+
+
+def _detect_forward_by_toe(scene, bones):
+    """判据一：脚 → 脚尖的位移方向。
+
+    解剖学上脚尖一定朝前，这个判据不会被「脸/眼材质叫什么」这类美术习惯影响。
+    返回 (需要转 180° 吗, 依据说明)；判不出来返回 (None, 依据)。
+    """
+    sx = sz = 0.0
+    n = 0
+    hit = []
+    for m in bones:
+        if not looks_like_toe(m.name or ""):
+            continue
+        p = m.parent
+        if p is None or p.cls != "LimbNode":
+            continue
+        tp = m_translation(m.world)
+        pp = m_translation(p.world)
+        dx = tp[0] - pp[0]
+        dz = tp[2] - pp[2]
+        if abs(dx) + abs(dz) < 1e-9:
+            continue
+        sx += dx
+        sz += dz
+        n += 1
+        if len(hit) < 4:
+            hit.append(m.name)
+    if n == 0:
+        return None, "no toe bone"
+    mx = sx / n
+    mz = sz / n
+    names = ", ".join(hit)
+    if abs(mx) > abs(mz):
+        # 朝 ±X（侧身 / 特殊摆位），180° 旋转修不了，只能交给用户
+        return None, ("toe bones point along X (%s), a 180 turn cannot fix it"
+                      % names)
+    need = mz < 0.0
+    return need, ("toe bones %s -> front %s"
+                  % (names, "+Z (no turn)" if not need else "-Z (needs 180)"))
+
+
+def _detect_forward_by_face_meshes(scene):
+    """判据二（兜底）：脸 / 眼 / 眉这些一定长在正面的网格，重心相对整体重心偏哪边。"""
+    face_z = 0.0
+    face_n = 0
+    all_z = 0.0
+    all_n = 0
+    left = right = None
+    for gid, mid in scene.geometry_model.items():
+        g = scene.byid.get(gid)
+        model = scene.models.get(mid)
+        if g is None or model is None or all_n > 40000:
+            continue
+        is_face = looks_like_face(model.name or "")
+        verts = g.get("Vertices")
+        if verts is None:
+            continue
+        w = m_mul(model.world, scene._geom_matrix(scene.byid.get(mid)))
+        v = verts.props[0]
+        nverts = len(v) // 3
+        step = max(1, nverts // 200)
+        for i in range(0, nverts, step):
+            p = m_point(w, v[i * 3:i * 3 + 3])
+            all_z += p[2]
+            all_n += 1
+            left = p[0] if left is None else min(left, p[0])
+            right = p[0] if right is None else max(right, p[0])
+            if is_face:
+                face_z += p[2]
+                face_n += 1
+    if face_n < 8 or all_n < 8:
+        return None, "face meshes found=%d (too few)" % face_n
+    dz = face_z / face_n - all_z / all_n
+    width = (right - left) if (left is not None and right is not None) else 0.0
+    if width > 0.0 and abs(dz) < width * 0.02:
+        # 偏得太少就等于没偏，别硬判（正面对称的模型、裙摆很大的模型都可能这样）
+        return None, "face meshes not clearly offset (dz=%.4f)" % dz
+    need = dz < 0.0
+    return need, ("face meshes offset dz=%.4f -> front %s"
+                  % (dz, "+Z (no turn)" if not need else "-Z (needs 180)"))
+
+
+def detect_forward_turn(scene, bones=None):
+    """要不要额外转 180°（等价于 C# 的 Rot180Y），返回 (bool|None, 依据说明)。
+
+    为什么必须判：FBX 里「角色朝哪边」完全由导出方决定，两种都很常见 ——
+    Unity / 游戏引擎导出的角色多朝 +Z，一部分 DCC 预设导出的朝 -Z。
+    MMD 的正面固定是 -Z，而本转换的 Z 取反本来就会把 +Z 翻成 -Z，
+    **也就是说朝 +Z 的文件只需要 Z 取反、不能再转 180°**；朝 -Z 的才要补一次。
+
+    判定在「未 FlipZ 的 FBX 原始朝向坐标系」里做（也就是本函数里 scene 给出来的
+    原始坐标），结论很直接：正面朝 +Z → 不用转；朝 -Z → 要转。
+
+    判据按可靠性排序，取第一个能用的；都拿不到就返回 None（交给用户的设置）。
+    """
+    if bones is None:
+        bones = [m for m in scene.models.values() if m.cls == "LimbNode"]
+    need, why = _detect_forward_by_toe(scene, bones)
+    if need is not None:
+        return need, why
+    need2, why2 = _detect_forward_by_face_meshes(scene)
+    return need2, why + " / " + why2
 
 
 # ------------------------------------------------------------------ math ----
@@ -173,9 +372,25 @@ class Scene:
 
         # connections:  ['OO', child_id, parent_id]
         self.parents = {}
+        # **按文件顺序**保留一份 (child, parent) 列表。
+        #
+        # 这一步不是可有可无：FBX 的 LayerElementMaterial 里的材质索引，对应的
+        # 是 FBX SDK `FbxNode::GetMaterial(i)` 的顺序，也就是**该节点在
+        # Connections 段里被连接的先后顺序**。
+        #
+        # 以前 _resolve_links() 直接遍历 self.parents（按 child 首次出现的顺序），
+        # 当同一批材质对多个网格的连接顺序与「材质节点在 Objects 段里出现的顺序」
+        # 不一致时就会串位。实测 NPC_Avatar_Lady_Bow_Anastasya：Cloth01 在文件里
+        # 的顺序是 Hair(490) Body(491) **Dress(492)** Body01(493) Crystal(494)
+        # Crystal01(495) Crystal02(496)，而父节点遍历给出的却是
+        # Hair Body Body01 Crystal Crystal01 **Dress** Crystal02 —— Dress 被挪到
+        # 了第 6 位，于是 7 个槽位里有 5 个配错贴图（一致性只有 19%），
+        # 表现就是「有些部分的贴图不对 / 像被换了 UV」。
+        self.conn_list = []
         for c in root.get("Connections").children:
             if len(c.props) >= 3:
                 self.parents.setdefault(c.props[1], []).append(c.props[2])
+                self.conn_list.append((c.props[1], c.props[2]))
 
         self._build_models()
         self._resolve_links()
@@ -270,7 +485,13 @@ class Scene:
             self._calc_world(c, m.world)
 
     def _resolve_links(self):
-        """child_id -> parent_id lists turned into typed dictionaries."""
+        """child_id -> parent_id lists turned into typed dictionaries.
+
+        **必须按 Connections 的文件顺序遍历**（self.conn_list），不能用
+        self.parents —— 后者是按 child 分组、以 child 首次出现的顺序展开的，
+        会把「材质 → 网格」的连接顺序打乱。原因见 Scene.__init__ 里的长注释：
+        LayerElementMaterial 的索引就是按连接的文件顺序来指的。
+        """
         self.geometry_model = {}
         self.model_material = {}        # model_id -> first material id (legacy)
         self.model_materials = {}       # model_id -> [material id, ...] (ordered)
@@ -281,43 +502,42 @@ class Scene:
         self.texture_materials = {}     # material_id -> [texture id, ...] (ordered)
         self.texture_video = {}         # texture_id -> video_id (embedded name)
 
-        for child, plist in self.parents.items():
+        for child, pid in self.conn_list:
             cn = self.byid.get(child)
             if cn is None:
                 continue
-            for pid in plist:
-                pn = self.byid.get(pid)
-                if pn is None:
-                    continue
-                if cn.name == "Geometry" and pn.name == "Model":
-                    self.geometry_model[child] = pid
-                elif cn.name == "Material" and pn.name == "Model":
-                    self.model_material[pid] = child
-                    self.model_materials.setdefault(pid, []).append(child)
-                elif cn.name == "Material" and pn.name == "Geometry":
-                    self.geometry_materials.setdefault(pid, []).append(child)
-                elif cn.name == "Deformer" and pn.name == "Geometry":
-                    if len(cn.props) > 2 and cn.props[2] == "Skin":
-                        self.geometry_skin[pid] = child
-                elif cn.name == "Deformer" and pn.name == "Deformer":
-                    if len(cn.props) > 2 and cn.props[2] == "Cluster":
-                        self.cluster_skin[child] = pid
-                elif cn.name == "Deformer" and pn.name == "Model":
-                    # FBX SDK / Blender exporter: C:"OO", <Cluster>, <Node(bone)>
-                    if len(cn.props) > 2 and cn.props[2] == "Cluster":
-                        self.cluster_bone[child] = pid
-                elif cn.name == "Model" and pn.name == "Deformer":
-                    # a few exporters reverse it: C:"OO", <Node(bone)>, <Cluster>
-                    if len(pn.props) > 2 and pn.props[2] == "Cluster":
-                        self.cluster_bone[pid] = child
-                elif cn.name == "Texture" and pn.name == "Material":
-                    self.texture_materials.setdefault(pid, []).append(child)
-                elif cn.name == "Material" and pn.name == "Texture":
-                    self.texture_materials.setdefault(cn.props[0], []).append(pid)
-                elif cn.name == "Texture" and pn.name == "Video":
-                    self.texture_video[child] = pid
-                elif cn.name == "Video" and pn.name == "Texture":
-                    self.texture_video[pid] = child
+            pn = self.byid.get(pid)
+            if pn is None:
+                continue
+            if cn.name == "Geometry" and pn.name == "Model":
+                self.geometry_model[child] = pid
+            elif cn.name == "Material" and pn.name == "Model":
+                self.model_material[pid] = child
+                self.model_materials.setdefault(pid, []).append(child)
+            elif cn.name == "Material" and pn.name == "Geometry":
+                self.geometry_materials.setdefault(pid, []).append(child)
+            elif cn.name == "Deformer" and pn.name == "Geometry":
+                if len(cn.props) > 2 and cn.props[2] == "Skin":
+                    self.geometry_skin[pid] = child
+            elif cn.name == "Deformer" and pn.name == "Deformer":
+                if len(cn.props) > 2 and cn.props[2] == "Cluster":
+                    self.cluster_skin[child] = pid
+            elif cn.name == "Deformer" and pn.name == "Model":
+                # FBX SDK / Blender exporter: C:"OO", <Cluster>, <Node(bone)>
+                if len(cn.props) > 2 and cn.props[2] == "Cluster":
+                    self.cluster_bone[child] = pid
+            elif cn.name == "Model" and pn.name == "Deformer":
+                # a few exporters reverse it: C:"OO", <Node(bone)>, <Cluster>
+                if len(pn.props) > 2 and pn.props[2] == "Cluster":
+                    self.cluster_bone[pid] = child
+            elif cn.name == "Texture" and pn.name == "Material":
+                self.texture_materials.setdefault(pid, []).append(child)
+            elif cn.name == "Material" and pn.name == "Texture":
+                self.texture_materials.setdefault(cn.props[0], []).append(pid)
+            elif cn.name == "Texture" and pn.name == "Video":
+                self.texture_video[child] = pid
+            elif cn.name == "Video" and pn.name == "Texture":
+                self.texture_video[pid] = child
 
 
 # ----------------------------------------------------------------- pmx ------
@@ -678,6 +898,223 @@ def _find_file(root, basename, limit=60000):
 # Pillow is preferred; a tiny built-in PNG/TGA reader is the fallback so the
 # feature works even when Pillow is not installed (the GUI runs on plain Python).
 
+def _decode_png_rgba(src):
+    """纯标准库 PNG 解码 → (width, height, RGBA bytes)，失败返回 None。
+
+    只处理 8bit、非隔行的 0/2/3/4/6 型（MMD 用得到的贴图都在这个范围内）。
+    alpha 统计要走这里，是因为 GUI 可能跑在没有 Pillow 的解释器上。
+    """
+    import zlib
+    try:
+        with open(src, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    pos = 8
+    width = height = bit_depth = color_type = interlace = None
+    idat = bytearray()
+    plte = None
+    trns = None
+    while pos + 8 <= len(data):
+        ln = struct.unpack(">I", data[pos:pos + 4])[0]
+        typ = data[pos + 4:pos + 8]
+        cdata = data[pos + 8:pos + 8 + ln]
+        if typ == b"IHDR" and len(cdata) >= 13:
+            width, height, bit_depth, color_type, _c, _f, interlace = \
+                struct.unpack(">IIBBBBB", cdata[:13])
+        elif typ == b"IDAT":
+            idat += cdata
+        elif typ == b"PLTE":
+            plte = cdata
+        elif typ == b"tRNS":
+            trns = cdata
+        pos += 12 + ln
+    if not width or not height or interlace or bit_depth != 8 \
+            or color_type not in (0, 2, 3, 4, 6):
+        return None
+    try:
+        raw = zlib.decompress(bytes(idat))
+    except Exception:
+        return None
+    ch_in = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[color_type]
+    stride = width * ch_in
+    if len(raw) < height * (stride + 1):
+        return None
+    prev = bytearray(stride)
+    rows = []
+    p = 0
+    for _ in range(height):
+        ftype = raw[p]
+        p += 1
+        line = bytearray(raw[p:p + stride])
+        p += stride
+        _png_unfilter(ftype, line, prev, ch_in)
+        rows.append(line)
+        prev = line
+    out = bytearray(width * height * 4)
+    for y in range(height):
+        line = rows[y]
+        base = y * width * 4
+        if color_type == 6:
+            out[base:base + width * 4] = line
+        elif color_type == 2:
+            for x in range(width):
+                out[base + x * 4:base + x * 4 + 3] = line[x * 3:x * 3 + 3]
+                out[base + x * 4 + 3] = 255
+        elif color_type == 4:
+            for x in range(width):
+                g = line[x * 2]
+                out[base + x * 4] = g
+                out[base + x * 4 + 1] = g
+                out[base + x * 4 + 2] = g
+                out[base + x * 4 + 3] = line[x * 2 + 1]
+        elif color_type == 0:
+            for x in range(width):
+                g = line[x]
+                out[base + x * 4] = g
+                out[base + x * 4 + 1] = g
+                out[base + x * 4 + 2] = g
+                out[base + x * 4 + 3] = 255
+        else:                       # 3 = palette
+            if plte is None:
+                return None
+            alpha_by = {}
+            if trns:
+                for i, a in enumerate(trns):
+                    alpha_by[i] = a
+            for x in range(width):
+                pi = line[x]
+                o = pi * 3
+                out[base + x * 4] = plte[o] if o + 2 < len(plte) else 0
+                out[base + x * 4 + 1] = plte[o + 1] if o + 2 < len(plte) else 0
+                out[base + x * 4 + 2] = plte[o + 2] if o + 2 < len(plte) else 0
+                out[base + x * 4 + 3] = alpha_by.get(pi, 255)
+    return width, height, bytes(out)
+
+
+def _load_rgba(src):
+    """(width, height, RGBA bytes)；拿不到位图返回 None。"""
+    try:
+        from PIL import Image
+        im = Image.open(src)
+        im = im.convert("RGBA")
+        return im.size[0], im.size[1], im.tobytes()
+    except ImportError:
+        pass
+    except Exception:
+        return None
+    return _decode_png_rgba(src)
+
+
+def _has_any_transparency(w, h, rgba):
+    """整张图有没有非 255 的 alpha。"""
+    for i in range(3, len(rgba), 4):
+        if rgba[i] != 255:
+            return True
+    return False
+
+
+def _alpha_stats_whole(w, h, rgba):
+    """整图 alpha 统计（4x4 网格降采样）→ (全透占比, 实心占比)。
+
+    每行起点错开一点：固定步长遇到周期图案会一直踩到同一类像素，把统计系统性
+    带偏（实测「周期 10、90% 全透」的合成图被算成 80%）。C# 那边没这个错位，
+    但只影响取样点不影响判据，故选得更稳的一版。
+    """
+    ws = max(1, w // 64)
+    hs = max(1, h // 64)
+    n = t = o = 0
+    row = 0
+    for y in range(0, h, hs):
+        base = y * w
+        x0 = (row * 7) % ws if ws > 1 else 0
+        for x in range(x0, w, ws):
+            a = rgba[(base + x) * 4 + 3]
+            n += 1
+            if a < ALPHA_TRANSPARENT_BELOW:
+                t += 1
+            elif a >= ALPHA_OPAQUE_ABOVE:
+                o += 1
+        row += 1
+    if n == 0:
+        return None
+    return t / n, o / n
+
+
+def _alpha_stats_uv(w, h, rgba, uvs):
+    """按「材质实际用到的 UV 角点」定点采样 → (全透占比, 实心占比, 采样数)。
+
+    uvs 里已经是 MMD 口径 (u, 1-v)（v=0 在最上一行），寻址按 MMD 的 wrap 来。
+    """
+    if not uvs:
+        return None
+    step = max(1, len(uvs) // ALPHA_MAX_SAMPLES)
+    t = o = n = 0
+    for i in range(0, len(uvs), step):
+        u, v = uvs[i]
+        x = int(math.floor(u * w)) % w if w else 0
+        y = int(math.floor(v * h)) % h if h else 0
+        a = rgba[(y * w + x) * 4 + 3]
+        n += 1
+        if a < ALPHA_TRANSPARENT_BELOW:
+            t += 1
+        elif a >= ALPHA_OPAQUE_ABOVE:
+            o += 1
+    if n == 0:
+        return None
+    return t / n, o / n, n
+
+
+def decide_alpha(src, uvs=None):
+    """判定一张贴图的 alpha 是不是「真透明」。返回 (verdict, detail)。
+
+    判据（两条统计**都要**满足才算「不是透明度」）：
+      · 用到的 UV 区域：全透占比 >= 0.75 且实心占比 <= 0.05；
+      · 整张图：同样两条。
+    直觉：真透明贴图一定有「实心的衣服本体」和「镂空的花边」两部分
+    （实测 Anastasya 丝袜 71% / 28%）。**整块区域几乎全透、且完全没有实心**
+    只能是「这里的 alpha 根本不是管透明的」（被当成自发光 / 高光遮罩写进去了）。
+
+    为什么两边互相印证：只用「用到的 UV」时，网格没有 UV 层（UV 全是 0）就会
+    退化成「只看一个像素」，样本量 1 也敢下结论；只用整图时，图集式贴图的
+    大片 padding 又会把统计带偏。要求两边都成立就把这两种情况挡在门外 ——
+    代价是有时会少去一张（偏保守），而这正是要的方向：判不准就保留，
+    用户还能手动选「全部去除」。
+    """
+    got = _load_rgba(src)
+    if got is None:
+        return ALPHA_KEEP, "cannot sample alpha"
+    w, h, rgba = got
+    if not _has_any_transparency(w, h, rgba):
+        return ALPHA_KEEP, "no transparency at all"
+    whole = _alpha_stats_whole(w, h, rgba)
+    used = _alpha_stats_uv(w, h, rgba, uvs) if uvs else None
+    if used is None or whole is None:
+        if whole is None:
+            return ALPHA_KEEP, "cannot sample alpha"
+        # 没有 UV 时更保守：要求「几乎全空」才敢去
+        verdict = (ALPHA_STRIP
+                   if (whole[0] >= ALPHA_NOUV_EMPTY and whole[1] <= ALPHA_NOUV_SOLID)
+                   else ALPHA_KEEP)
+        detail = ("whole image transparent=%.1f%% opaque=%.1f%%"
+                  % (whole[0] * 100, whole[1] * 100))
+        return verdict, detail
+    detail = ("uv samples=%d transparent=%.1f%% opaque=%.1f%% | whole "
+              "transparent=%.1f%% opaque=%.1f%%"
+              % (used[2], used[0] * 100, used[1] * 100,
+                 whole[0] * 100, whole[1] * 100))
+    used_junk = (used[0] >= ALPHA_MOSTLY_EMPTY and used[1] <= ALPHA_ALMOST_NO_SOLID)
+    whole_junk = (whole[0] >= ALPHA_MOSTLY_EMPTY and whole[1] <= ALPHA_ALMOST_NO_SOLID)
+    return (ALPHA_STRIP if (used_junk and whole_junk) else ALPHA_KEEP), detail
+
+
+def _opaque_copy_name(basename):
+    stem, ext = os.path.splitext(basename)
+    return stem + ALPHA_NOALPHA_SUFFIX + ext
+
+
 def _strip_alpha(src, dst):
     """Try Pillow first; fall back to the pure-stdlib reader."""
     try:
@@ -954,16 +1391,25 @@ def _strip_tga_alpha(src, dst):
     return "stripped" if had_alpha else "no_alpha"
 
 
-def _copy_textures(tex_list, fbx_path, out_dir, verbose, remove_alpha=False):
+def _copy_textures(tex_list, fbx_path, out_dir, verbose, alpha_mode=ALPHA_AUTO,
+                   alpha_uvs=None):
     """Locate each texture image on disk and copy it into ``out_dir/textures/``.
 
-    Returns the set of basenames that were copied.  Files referenced by the FBX
-    but missing locally (the FBX usually stores an absolute game path like
-    ``G:\\...``) are simply skipped - the PMX still references them so the user
-    can drop the images into ``textures/`` later.
+    Returns ``(out_names, stats)``:
+
+    * ``out_names`` - ``{源文件名: 要在 PMX 里引用的文件名}``。走了 alpha 处理的
+      贴图在这里被换成 ``<名>_noalpha.png``（**原始图片一律不动**）。
+    * ``stats``     - 计数与逐张的判定说明，供日志 / 界面显示。
+
+    Files referenced by the FBX but missing locally (the FBX usually stores an
+    absolute game path like ``G:\\...``) are simply skipped - the PMX still
+    references them so the user can drop the images into ``textures/`` later.
     """
+    stats = {"mode": alpha_mode, "copied": 0, "weighed": 0,
+             "stripped": 0, "kept": 0, "opaque": 0, "failed": 0,
+             "decisions": [], "missing": 0, "out_names": {}}
     if not tex_list:
-        return set()
+        return stats["out_names"], stats
     import shutil
     fbx_dir = os.path.dirname(os.path.abspath(fbx_path))
     parent = os.path.dirname(fbx_dir)
@@ -989,45 +1435,103 @@ def _copy_textures(tex_list, fbx_path, out_dir, verbose, remove_alpha=False):
             if hit:
                 found[bn] = hit
                 break
-    copied = set()
-    alpha_stripped = 0
+    stats["missing"] = len(tex_list) - len(found)
+
     if found:
         tdir = os.path.join(out_dir, "textures")
         os.makedirs(tdir, exist_ok=True)
         for bn, src in found.items():
-            dst = os.path.join(tdir, bn)
-            if remove_alpha:
-                res = _strip_alpha(src, dst)
-                if res == "stripped":
-                    alpha_stripped += 1
-                elif res is False:
-                    try:
-                        shutil.copyfile(src, dst)
-                    except OSError:
-                        continue
-                copied.add(bn)
+            ref = bn
+            out_bn = bn
+            wrote_copy = False          # 副本已经写过盘了，别再被原件覆盖回去
+            if alpha_mode != ALPHA_KEEP:
+                # 先看看这张图到底有没有 alpha 可处理
+                got = _load_rgba(src)
+                has_a = got is not None and _has_any_transparency(*got)
+                if not has_a:
+                    stats["opaque"] += 1
+                elif alpha_mode == ALPHA_STRIP:
+                    verdict, detail = ALPHA_STRIP, "StripAll"
+                else:
+                    stats["weighed"] += 1
+                    verdict, detail = decide_alpha(src, (alpha_uvs or {}).get(bn))
+                if has_a:
+                    stats["decisions"].append((bn, verdict, detail))
+                    if verdict != ALPHA_STRIP:
+                        stats["kept"] += 1
+                    else:
+                        out_bn = _opaque_copy_name(bn)
+                        dst = os.path.join(tdir, out_bn)
+                        res = _strip_alpha(src, dst)
+                        if res == "stripped":
+                            stats["stripped"] += 1
+                            ref = out_bn
+                            wrote_copy = True
+                        elif res is False:
+                            stats["failed"] += 1
+                            out_bn = bn
+                        else:
+                            # 写不出副本（格式不支持等）：退回原图
+                            out_bn = bn
+            dst = os.path.join(tdir, out_bn)
+            if wrote_copy:
+                stats["copied"] += 1
+                stats["out_names"][bn] = ref
                 continue
             try:
-                shutil.copyfile(src, os.path.join(tdir, bn))
-                copied.add(bn)
+                if not (os.path.abspath(src) == os.path.abspath(dst)):
+                    shutil.copyfile(src, dst)
+                stats["copied"] += 1
             except OSError:
-                pass
+                if ref != bn:
+                    ref = bn
+                continue
+            stats["out_names"][bn] = ref
+
     if verbose and tex_list:
-        if copied:
+        if stats["copied"]:
             print("  textures: copied %d / %d image file(s) into textures/"
-                  % (len(copied), len(tex_list)))
-        if remove_alpha:
+                  % (stats["copied"], len(tex_list)))
+        if alpha_mode == ALPHA_KEEP:
+            pass
+        elif alpha_mode == ALPHA_STRIP:
             print("  textures: 去除透明通道 %d 张（已成不透明 RGB）"
-                  % alpha_stripped)
-        if len(copied) < len(tex_list):
+                  % stats["stripped"])
+        else:
+            print("  textures: alpha 自动判定 —— 去掉 %d 张 / 保留 %d 张"
+                  "（原本就不透明的 %d 张）"
+                  % (stats["stripped"], stats["kept"], stats["opaque"]))
+            if stats["failed"]:
+                print("  textures: %d 张去 alpha 失败，已回退用原图" % stats["failed"])
+        if stats["missing"]:
             print("  textures: %d referenced but not found on disk "
-                  "(drop them into textures/ later)"
-                  % (len(tex_list) - len(copied)))
-    return copied
+                  "(drop them into textures/ later)" % stats["missing"])
+    return stats["out_names"], stats
+
+
+def _mesh_has_no_material(g, model, scene, mats=None):
+    """该网格是不是「一个材质都没挂」。
+
+    游戏（Unity/HoYo 系）导出时常带一张名为 `EffectMesh` 的效果片：它没有
+    材质节点、没有贴图，UV 铺满整张图集，几何是一大片横跨全身的薄板。按普通
+    网格导出去，在 MMD 里就是一块不透明的灰白大板子盖在裙子上（贴图看着像被
+    "翻错"了，其实是底色被压住了）。C# 插件侧的日志同样把它标成 `材质 '?'`
+    / 无贴图，产出的 PMX 里也不含这张网格，所以这里直接跳过。
+    """
+    if mats is None:
+        mats = _mesh_materials(g, model, scene)
+    if not mats:
+        return True
+    return all(m is None for m in mats)
 
 
 def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=None,
-            center=True, morphs=True, max_morphs=None, remove_alpha=False):
+            center=True, morphs=True, max_morphs=None, remove_alpha=None,
+            alpha_mode=None, auto_facing=True, face_180=False,
+            skip_untextured=True):
+    # ⚠ remove_alpha 的默认必须是 None（不是 False）：False 会被 alpha_mode_of
+    #   当成「用户显式要 keep」，把「不指定就用 auto」的默认遮蔽掉。
+    alpha_mode = alpha_mode_of(alpha_mode, remove_alpha)
     # 确保输出目录存在（CLI 直接调用时尤其容易漏建）
     _odir = os.path.dirname(os.path.abspath(out_path))
     try:
@@ -1050,8 +1554,23 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
         bones = [root]
     bone_index = {m.id: i for i, m in enumerate(bones)}
 
+    # ---- 朝向：要不要在 Z 取反之外再转 180°（判据见 detect_forward_turn）
+    if auto_facing:
+        turn, facing_reason = detect_forward_turn(scene, bones)
+        if turn is None:
+            turn = bool(face_180)
+            facing_reason += " -> manual setting used (%s)" % (
+                "180" if turn else "none")
+    else:
+        turn = bool(face_180)
+        facing_reason = "auto-detect off -> manual setting (%s)" % (
+            "180" if turn else "none")
+    if verbose:
+        print("  facing: %s -> %s" % (facing_reason, "turn 180" if turn else "keep"))
+
     # ---- per-mesh data
     mesh_data = []
+    skipped_untextured = []       # 无材质网格（效果片）——默认丢掉
     for gid in geo_ids:
         g = scene.byid[gid]
         mid = scene.geometry_model[gid]
@@ -1060,9 +1579,15 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
         pvi = g.get("PolygonVertexIndex").props[0]
         nverts = len(verts) // 3
         tris = triangulate(pvi)
+        mats = _mesh_materials(g, model, scene)
+        if skip_untextured and _mesh_has_no_material(g, model, scene, mats):
+            skipped_untextured.append((model.name, len(tris)))
+            if verbose:
+                print("  skip    %-22s tris=%-6d (no material / effect sheet)"
+                      % (model.name, len(tris)))
+            continue
         uv = sample_uv(g.get("LayerElementUV"), pvi)
         nrm = sample_normals(g.get("LayerElementNormal"), pvi)
-        mats = _mesh_materials(g, model, scene)
         poly_mat = _poly_material_index(g, pvi, len(mats))
         mesh_data.append({
             "geo": g, "model": model, "verts": verts, "tris": tris,
@@ -1092,9 +1617,26 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
     else:
         scale = float(scale_mode)
 
+    # 换轴 / 换手性 / 转向统一走这里（方向用同一套，缩放只作用在位置上）。
+    #
+    # 为什么 turn 是「把镜像轴从 Z 换成 X」而不是「再绕 Y 转 180°」：
+    # FBX→MMD 必须做一次单轴反射（行列式 -1）才能把右手系变左手系，默认反射的是
+    # Z。而反射 Z 会把「朝 +Z 的模型」翻成朝 -Z（正好是 MMD 要的），
+    # 同时把「本来就朝 -Z 的模型」翻成朝 +Z（背对镜头）。
+    # 后一种要修，而「单轴反射由 Z 改成 X」与默认方案之间恰好差一个绕 Y 的 180°，
+    # 行列式仍是 -1，手性转换不受影响，绕序照旧交给 detect_winding 投票。
+    def xfd(d):
+        x, y, z = d
+        if turn:
+            x = -x
+            if not flip_z:
+                z = -z
+        elif flip_z:
+            z = -z
+        return (x, y, z)
+
     def xf(p):
-        x, y, z = p
-        z = -z if flip_z else z
+        x, y, z = xfd(p)
         return (x * scale, y * scale, z * scale)
 
     # ---- build vertices
@@ -1105,6 +1647,7 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
     geo_cp_to_pmx = {}
     # geometry id -> full transform (world * geometric) for that mesh
     geo_w = {}
+    uv_by_mat = {}          # 材质节点 id -> 该材质实际用到的 UV 角点（MMD 口径）
 
     weights_of_geo = {}
     if verbose:
@@ -1160,6 +1703,10 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
             for cp, corner in tri:
                 nval = nrm[corner] if (nrm is not None and corner < len(nrm)) else None
                 uval = uv[corner] if (uv is not None and corner < len(uv)) else (0.0, 0.0)
+                # 记下每个材质实际用到的 UV 角点（给 alpha 判定定点采样用，MMD 口径 v 上下翻）
+                _uvm = uv_by_mat.setdefault(mats[mat_idx] if mat_idx < len(mats) else None, [])
+                if len(_uvm) < 20000:
+                    _uvm.append((uval[0], 1.0 - uval[1]))
                 k = (cp, round(uval[0], 5), round(uval[1], 5))
                 if nval is not None:
                     k += (round(nval[0], 4), round(nval[1], 4), round(nval[2], 4))
@@ -1170,7 +1717,7 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
                         d = m_dir(w, nval)
                         ln = math.sqrt(d[0] ** 2 + d[1] ** 2 + d[2] ** 2) or 1.0
                         d = (d[0] / ln, d[1] / ln, d[2] / ln)
-                        nd = (d[0], d[1], -d[2] if flip_z else d[2])
+                        nd = xfd(d)
                     else:
                         nd = (0.0, 1.0, 0.0)
                     wl = sorted(acc.get(cp, []), key=lambda t: -t[1])[:4]
@@ -1246,8 +1793,21 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
                 tex_name_to_idx[basename] = len(tex_list)
                 tex_list.append(basename)
             tex_index_of_mat[mat_node_id] = tex_name_to_idx[basename]
+    # 每张贴图对应「哪些材质用到了它」——alpha 自动判定按这些材质的 UV 定点采样，
+    # 而不是扫整图（整图的空白 padding 会把统计带偏）。
+    alpha_uvs = {}
+    for mat_node_id, tix in tex_index_of_mat.items():
+        if 0 <= tix < len(tex_list):
+            bn = tex_list[tix]
+            lst = uv_by_mat.get(mat_node_id)
+            if lst:
+                alpha_uvs.setdefault(bn, []).extend(lst)
     # copy image files next to the pmx when they can be found locally
-    _copy_textures(tex_list, scene.path, _odir, verbose, remove_alpha=remove_alpha)
+    tex_out_names, tex_stats = _copy_textures(
+        tex_list, scene.path, _odir, verbose, alpha_mode=alpha_mode,
+        alpha_uvs=alpha_uvs)
+    # 走了 alpha 处理的贴图在 PMX 里要引用 <名>_noalpha.png
+    tex_list = [tex_out_names.get(bn, bn) for bn in tex_list]
 
     # ---- index widths depend on the final vertex / triangle / material / texture counts
     # (multi-material meshes raise the material count above the per-mesh guess)
@@ -1345,18 +1905,42 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
         for v4 in diffuse:
             pw.f32(v4)
         pw.f32(0.0); pw.f32(0.0); pw.f32(0.0)          # specular
-        pw.f32(0.0)                                     # shininess
+        # shininess：C# 参考实现 MaterialDefaults.UseFbxShininess = false
+        # → 一律写默认值 25（不是 0）。specular 是 0 所以不影响观感，
+        # 只是让材质和 FbxImporterPlugin 的产物逐字段一致。
+        pw.f32(25.0)                                    # shininess
         pw.f32(0.5); pw.f32(0.5); pw.f32(0.5)          # ambient (按需求默认 0.5 0.5 0.5)
-        # 关闭轮廓线（0x10），保留双面+地面阴影+自身阴影贴图
-        pw.buf += bytes([0x01 | 0x02 | 0x04])
+        # 描画フラグ：C# 参考实现是 BothDraw(true) | Shadow(true)、
+        # SelfShadow(false) | SelfShadowMap(false) | Edge(false)
+        # → 0x01 | 0x02 = 0x03。
+        # 以前多写了 0x04（セルフシャドウマップに描画），与参考实现不一致：
+        # 既然没开 0x08（接收自阴影），就不该往自阴影贴图里画。
+        pw.buf += bytes([0x01 | 0x02])
         pw.f32(0.0); pw.f32(0.0); pw.f32(0.0); pw.f32(0.0)   # edge colour（alpha=0 彻底去黑边）
         pw.f32(0.0)                                     # edge size
         tex_idx = tex_index_of_mat.get(mat_node_id, -1) if mat_node_id else -1
         pw.idx(tex_idx, ti_size)                        # texture
         pw.idx(-1, ti_size)                             # sphere
         pw.buf += bytes([0])                            # sphere mode
-        pw.buf += bytes([1])                            # toon: internal
-        pw.buf += bytes([0])                            # toon 0
+        # toon：**不使用**。
+        #
+        # PMX 里 toon 字段的宽度由「共有Toonフラグ」决定，两个方向都别搞反
+        # （PMX 规范 + mmd_tools 的 `is_shared_toon_texture` 一致）：
+        #     flag = 1 → 共享/内建 toon。字段是 **1 字节编号**，引用 MMD 安装目录
+        #                `Data/` 下的 toon01.bmp … toon10.bmp。
+        #                ⚠ **编号 0 就是 toon01.bmp，不是「不使用」**：mmd_tools
+        #                  源码里写死了这个 +1
+        #                      toon_path = "toon%02d.bmp" % (shared + 1)
+        #                  而 MMD 的 Data 目录里**没有 toon00.bmp**（只有 01..10）。
+        #     flag = 0 → 本模型**纹理表**里的贴图，字段是**纹理索引宽度**，
+        #                **-1 = なし（不使用）**。
+        #
+        # 2026-09-24 修：以前写的是 flag=1 + 编号 0，注释误以为「0 = toon00.bmp
+        # = 不使用」，实际等于给每个材质硬套一层 toon01.bmp，用户反馈「PMX 还是
+        # 自动上了 Toon 路径」。对照实测：用户本机那份公认正常的 Anastasya.pmx
+        # 全部 13 个材质都是 flag=0 / -1。
+        pw.buf += bytes([0])                            # toon: 引用本模型纹理表
+        pw.idx(-1, ti_size)                             # -1 = 不使用 toon
         pw.text("")
         pw.i32(cnt * 3)
 
@@ -1475,7 +2059,11 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
         f.write(pw.buf)
     return {"verts": nv, "tris": nt, "bones": len(bones),
             "materials": len(segments), "bytes": len(pw.buf),
-            "morphs": written_morphs, "scale": scale, "vi_size": vi_size}
+            "morphs": written_morphs, "scale": scale, "vi_size": vi_size,
+            "face_turn": bool(turn), "facing_reason": facing_reason,
+            "alpha_mode": alpha_mode, "alpha": tex_stats,
+            "textures": list(tex_list),
+            "skipped_untextured": skipped_untextured}
 
 
 def _bone_depth(m):
@@ -1501,8 +2089,19 @@ def main():
                     help="do not re-center/ground the model (keep FBX world position)")
     ap.add_argument("--no-morphs", action="store_true",
                     help="do not export FBX blend shapes as PMX morphs (表情)")
-    ap.add_argument("--remove-alpha", action="store_true",
-                    help="drop the alpha channel of copied textures (write opaque RGB)")
+    ap.add_argument("--alpha", choices=list(ALPHA_MODES), default=None,
+                    help="texture alpha: keep | auto (default) | strip")
+    ap.add_argument("--remove-alpha", action="store_true", default=None,
+                    help="legacy alias for --alpha (maps to auto, NOT strip: "
+                         "it only strips mask-like alpha, keeps real transparency)")
+    ap.add_argument("--no-auto-facing", action="store_true",
+                    help="disable per-file facing detection (toe / face mesh)")
+    ap.add_argument("--face-180", action="store_true",
+                    help="force an extra 180 degree turn (manual override)")
+    ap.add_argument("--keep-untextured-meshes", action="store_true",
+                    help="keep meshes that carry no material at all (default: "
+                         "skip them; these are game 'effect sheets' that would "
+                         "render as an opaque grey board over the model)")
     ap.add_argument("--max-morphs", type=int, default=None,
                     help="cap the number of exported morphs (default: no limit)")
     ap.add_argument("--info", action="store_true")
@@ -1529,12 +2128,19 @@ def main():
         scale = 1.0
     st = convert(scene, out, scale_mode=scale, flip_z=not a.no_flip_z,
                  center=not a.no_center, morphs=not a.no_morphs,
-                 max_morphs=a.max_morphs, remove_alpha=a.remove_alpha,
+                 max_morphs=a.max_morphs,
+                 alpha_mode=a.alpha, remove_alpha=a.remove_alpha,
+                 auto_facing=not a.no_auto_facing, face_180=a.face_180,
+                 skip_untextured=not a.keep_untextured_meshes,
                  name=os.path.splitext(os.path.basename(a.fbx))[0])
     print("\nwrote %s" % out)
     print("  vertices=%d  triangles=%d  bones=%d  materials=%d  morphs=%d  scale=%.4f"
           % (st["verts"], st["tris"], st["bones"], st["materials"],
              st["morphs"], st["scale"]))
+    if st["skipped_untextured"]:
+        print("  skipped %d mesh(es) with no material: %s"
+              % (len(st["skipped_untextured"]),
+                 ", ".join("%s(%d tris)" % (n, t) for n, t in st["skipped_untextured"])))
     print("  size=%.2f MB  (vertex index width %d bytes)"
           % (st["bytes"] / 1048576, st["vi_size"]))
     return 0

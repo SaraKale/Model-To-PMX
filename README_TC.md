@@ -1,6 +1,6 @@
-# FBX / VRM / PMX 模型轉換器（純 Python）
+# 模型轉換器（純 Python）
 
-把 `.fbx`、`.unitypackage`、`.vrm`、`.pmx`、`.uemodel`（UEFormat）互相轉換，**全部用 Python 標準庫實作**。
+把 `.fbx`、`.unitypackage`、`.vrm`、`.pmx`、`.uemodel`（UEFormat）互相轉換，並能把 `.psk` / `.pskx`（Unreal ActorX）轉成 PMX，**全部用 Python 標準庫實作**。
 不需要 Blender / Autodesk FBX SDK / Unity 3D，也不需要 mmd_tools / UniVRM 等外掛。直接讀寫二進制格式，拖進視窗即可轉換。
 
 [English](README.md) | [簡體中文](README_SC.md) | [繁體中文](README_TC.md) | [日本語](README_JP.md)
@@ -23,6 +23,7 @@
 | PMX → VRM（0.x / 1.0） | 自動寫 VRM meta、humanoid 骨骼映射、morph target |
 | uemodel（UEFormat） → PMX | 讀公開的 UEFormat `.uemodel`（v1–v10）；可同時匯出一份 ASCII FBX |
 | PMX → uemodel（UEFormat） | 寫出 UEFormat `.uemodel`（預設 v9，可選 v10），可交給 UE / FModel 生態 |
+| PSK / PSKX（Unreal ActorX） → PMX | 讀 Unreal 的 `.psk`（`FACE0000`）/ `.pskx`（`FACE3200`），帶頂點權重、MRPH 頂點表情、附加 UV |
 | PMX → 僅校驗 + 預覽 | 唯讀結構校驗，不輸出檔案 |
 
 ### 核心特性
@@ -33,14 +34,20 @@
   tkinterdnd2 之類的第三方函式庫。
 - **待轉檔案清單**：拖入後拖放區下方列出 檔名 / 格式 / 大小 與總大小，可追加、
   單選移除、雙擊單獨預覽；**看清單就知道這次要轉什麼**，不點「開始轉換」不動手。
-- **即時背視圖預覽**：拖入模型即可看到 3D 背視圖，可拖動旋轉 / 滾輪縮放，
-  可疊加骨骼點檢查對齊。
+- **即時正面預覽**：拖入模型即可看到 3D 正面預覽，可拖動旋轉 / 滾輪縮放，
+  可疊加骨骼點檢查對齊（工具列的 正視 / 左視 / 背視 / 俯視 依「看到模型哪一面」命名）。
+- **一律不上 Toon**：所有方向寫出的 PMX 材質都是 `toon_flag=0` + `toon=-1`，
+  也就是 MMD 裡的「不使用 toon」。
 - **多語言介面**：右上角可切換 簡體中文 / 繁體中文 / English / 日本語，選擇記憶到設定。
 - **高分屏友善**：依系統 DPI 自動縮放，右上角「介面縮放」可手動指定倍率。
 - **分頁式選項**：選項區按「通用 / FBX / VRM / UE / 輸出」分為五個標籤頁，易於擴充。
 - **自動繞序判定**：三角形繞序用「幾何面法線 vs 頂點法線」投票自動判定，
   避免出現大面積鏤空 / 輪廓線糊成黑塊。
 - **貼圖處理**：PNG/JPEG 直接透傳，BMP/TGA 現轉 PNG，嵌入 GLB 或匯出到 PMX 同目錄。
+- **PSK / PSKX 直讀**：Unreal ActorX 的 `.psk`（`FACE0000`）與 `.pskx`（`FACE3200`）都能讀，
+  頂點權重、MRPH 頂點表情、`EXTRAUVS*` 附加 UV 一併帶過來；Bip001 這套 3dsMax Biped
+  骨名自動對應成 MMD 標準日文名（`センター` / `上半身` / `左足ＩＫ` …），
+  **英文原名寫進骨骼的英文名備註欄位**，兩邊都不丟。
 
 ---
 
@@ -66,6 +73,7 @@ Model-to-PMX/
 │   ├── pmxio.py                 #   完整 PMX 2.0 讀寫（含表情/IK/付與/剛體/關節）
 │   ├── vrmio.py                 #   GLB/glTF 容器讀寫 + PNG 編碼 + BMP/TGA 解碼
 │   ├── uemodelio.py             #   UEFormat .uemodel 讀寫（v1–v10）
+│   ├── pskio.py                 #   Unreal ActorX .psk / .pskx 讀取
 │   ├── fbxout.py                #   ASCII FBX 7.4 寫出器（「同時匯出 FBX」用）
 │   └── unitypackage_unpack.py   #   解包 .unitypackage（gzip tar）
 │
@@ -75,10 +83,11 @@ Model-to-PMX/
 │   ├── pmx2vrm.py               #   PMX → VRM
 │   ├── uemodel2pmx.py           #   uemodel（UEFormat）→ PMX（可同時匯出 FBX）
 │   ├── pmx2uemodel.py           #   PMX → uemodel（UEFormat）
+│   ├── psk2pmx.py               #   PSK / PSKX（Unreal ActorX）→ PMX
 │   └── pmx_check.py             #   PMX 校驗 + 軟體渲染預覽圖
 │
 ├── gfx/
-│   └── preview.py               # 即時 3D 背視圖預覽控制項
+│   └── preview.py               # 即時 3D 正面預覽控制項
 │
 ```
 
@@ -92,7 +101,7 @@ Model-to-PMX/
 ### 方式一：圖形介面（推薦）
 
 1. 輸入執行 `python main.py`
-2. 把 `.fbx` / `.unitypackage` / `.vrm` / `.pmx` / `.uemodel` 檔案**拖進視窗任意位置**，或點擊拖放區選擇檔案。
+2. 把 `.fbx` / `.unitypackage` / `.vrm` / `.pmx` / `.uemodel` / `.psk` / `.pskx` 檔案**拖進視窗任意位置**，或點擊拖放區選擇檔案。
    **拖入只會載入 + 出預覽，不會自動轉換**；確認任務方向與選項後，點「開始轉換」才會真正執行。
 3. 拖放區下方會出現**已選擇的檔案清單**（檔名 / 格式 / 大小），一眼就能看清這次要轉哪些：
    - 繼續拖入是**追加**到清單，重複的檔案依絕對路徑自動去重；
@@ -105,12 +114,25 @@ Model-to-PMX/
 介面要點：
 
 - **左右分欄**：像 Blender 那樣可以拖中間的分隔條調整寬度，位置會記進 `config.json`
-- **右欄整列預覽**：背視圖即時預覽，底部工具條有 正視 / 左視 / 背視 / 俯視 / 復位 / 自轉 / 骨骼 / 線框
+- **右欄整列預覽**：正面即時預覽，底部工具條有 正視 / 左視 / 背視 / 俯視 / 復位 / 自轉 / 骨骼 / 線框。
+  四個視角按鈕依**「看到模型的哪一面」**命名：正視 = 看到臉（相機在 `-Z`，也就是 MMD 的正面）、
+  背視 = 看到背部（相機在 `+Z`）、左視 = 看到模型左側（相機在 `+X`，MMD 裡 `+X` 是模型的左手側）、
+  俯視 = 從上方看
 - **右下角渲染後端**：顯示目前用的是 `Pillow` 還是純 Python，以及上一幀耗時（毫秒）
 - **右上角「語言」**：簡體中文 / 繁體中文 / English / 日本語（預覽工具條也會跟著切）
 - **右上角「介面縮放」**：自動跟隨系統 DPI，或手動指定倍率
 - **選項分頁**：「通用 / FBX / VRM / UE / 輸出」五個標籤頁
 - **UE 選項頁**：任務選「uemodel → PMX」時，勾上「同時匯出 FBX 檔案」就會在 PMX 旁邊多寫一份 ASCII FBX；這一頁還管目標身高（cm）與透明通道處理
+- **FBX 選項頁**：管三件事，改完會立刻影響預覽和「開始轉換」的結果
+  - **貼圖透明通道**：`保留`（原樣）/ `自動判定（推薦）`/ `全部去除`。
+    MMD 把貼圖 alpha 直接當材質透明度，而遊戲貼圖常常把 alpha 當發光／高光遮罩用——
+    後者必須去掉，否則模型會整塊半透或出現鬼影；前者必須保留，否則蕾絲、薄紗、髮梢會被削成硬邊。
+    `自動判定` 的做法是：按 UV 取樣這張貼圖真正用到的區域（最多 4000 點）統計「幾乎全透占比 ≥75% 且實心占比 ≤5%」，
+    再用整圖統計互相印證，兩條都成立才判定為遮罩 → 複製一份去 alpha 的 `<名>_noalpha.png`，**只在材質裡改成引用副本，來源貼圖原圖一個位元組都不動**。
+  - **自動判定朝向**：FBX 裡沒有「模型正面朝哪」這個欄位，座標轉換要做一次單軸反射，反射哪個軸決定了模型最後是正對鏡頭還是背對。
+    勾選後按**腳尖方向**（所有 toe 類骨骼相對父骨的位移和，`|x| << |z|` 才算數）→ 不行再用**臉部網格重心**（臉／頭／目／口／眉類網格的加權中心與全身中心的偏移）兩級判定，結果和判據都會寫進日誌。
+  - **強制額外轉 180°**：在上述結果之上再追加一次繞 Y 的 180°。只在自動判定搞不定（兩個判據都拿不到）或你本來就想讓模型背對鏡頭時用。
+  - （固定行為）**沒有掛任何材質的網格會被直接跳過**。遊戲（Unity / 米哈遊系）匯出常帶一張叫 `EffectMesh` 的效果片：沒有材質節點、沒有貼圖，UV 鋪滿整張圖集，幾何是一片橫跨全身的薄板。按普通網格匯出去，在 MMD 裡就是一塊不透明的灰白大板壓在裙子上，看起來很像「貼圖被翻錯了」，其實是底色被蓋住了。日誌裡會印出 `skip <網格名> tris=<n> (no material / effect sheet)`。
 - **匯出 FBX 的貼圖**：寫出的 FBX 會把 UV 的 **V 軸翻過來**（PMX/MMD 的 UV 原點在左上，FBX / Blender / Maya 在左下），貼圖引用寫成相對路徑 `textures/…`。所以要把 FBX 放在 PMX 旁邊、`textures` 資料夾一起帶著，貼圖才顯示得出來；否則會看到「形狀對、圖案整體錯位」的樣子
 - **複選項已加大**：勾選框與點擊區域更易點擊
 
@@ -135,6 +157,11 @@ python main.py
 # FBX → PMX
 python convert/fbx2pmx.py "model.fbx" -o "model.pmx"
 
+# FBX → PMX：手動指定 alpha 三檔 / 關掉朝向自動判定 / 強制多轉 180°
+python convert/fbx2pmx.py "model.fbx" -o "model.pmx" --alpha auto
+python convert/fbx2pmx.py "model.fbx" -o "model.pmx" --alpha strip
+python convert/fbx2pmx.py "model.fbx" -o "model.pmx" --no-auto-facing --face-180
+
 # 解包 unitypackage（--list 只列內容不解包）
 python formats/unitypackage_unpack.py "pack.unitypackage" --list
 python formats/unitypackage_unpack.py "pack.unitypackage"
@@ -157,6 +184,11 @@ python convert/uemodel2pmx.py "model.uemodel" -o "model.pmx" --fbx
 python convert/pmx2uemodel.py "model.pmx" -o "model.uemodel"
 python convert/pmx2uemodel.py "model.pmx" -o "model.uemodel" --version 10
 
+# PSK / PSKX（Unreal ActorX）→ PMX
+# 骨名預設轉成 MMD 標準日文名（英文原名寫進英文名備註）；貼圖依材質名在源目錄自動尋找
+python convert/psk2pmx.py "model.psk" -o "model.pmx"
+python convert/psk2pmx.py "model.pskx" -o "model.pmx" --raw-bone-names --no-ik
+
 # PMX 校驗 + 產生預覽圖
 python convert/pmx_check.py "model.pmx"
 python convert/pmx_check.py "model.pmx" --bones   # 疊加骨骼位置
@@ -176,13 +208,47 @@ python formats/pmxio.py "model.pmx" --in-place    # 直接覆蓋（建議先備�
 | `--scale raw` | 保持 FBX 原始尺寸（公尺） |
 | `--scale 12.5` | 手動指定縮放倍數 |
 | `--no-flip-z` | 不做右手系→左手系轉換（預設會轉） |
+| `--alpha keep\|auto\|strip` | 貼圖透明通道處理，預設 `auto`（詳見下表） |
+| `--remove-alpha` | 舊版開關，等價於 `--alpha auto`（保留相容） |
+| `--no-auto-facing` | 關閉朝向自動判定，用預設單軸反射（Z） |
+| `--face-180` | 在判定結果之上再強制多轉 180° |
+| `--keep-untextured-meshes` | 保留沒有材質的網格（預設跳過，見上方「效果片」說明） |
 | `--info` | 只印出結構資訊，不轉換 |
+
+`--alpha` 三檔的含義：
+
+| 檔位 | 行為 |
+|---|---|
+| `keep` | 完全不動 alpha，貼圖原圖直接引用 |
+| `auto`（預設） | 逐張判斷：被判定成「遮罩」的才複製一份去 alpha 的 `<名>_noalpha.png` 並改引用；真透明／全不透明的一律保留 |
+| `strip` | 只要有 alpha 通道就一律去（舊版行為） |
+
+自動判定的判據（與 `PEPlugins-FBXimport` 外掛一致）：alpha < 8 記「透明」、> 250 記「實心」，
+按 UV 區域取樣（最多 4000 點）與整圖統計互相印證，**透明 ≥75% 且實心 ≤5%** 才判為遮罩；
+拿不到 UV 時退回整圖的 90% / 1%。判定的明細（貼圖名稱 → strip / keep + 透明與實心占比）會打進日誌。
 
 `pmx2vrm.py`：`--spec 1.0|0x`、`--scale auto|倍率`、`--rotate auto|none|y180`、
 `--flip-winding`、`--force-double-sided`、`--max-morphs N`、`--title` / `--author`。
 
 `vrm2pmx.py`：`--scale`、`--rotate`、`--flip-winding`、`--edge`（開啟輪廓線）、
 `--force-double-sided`、`--name`。
+
+`psk2pmx.py`：
+
+| 參數 | 說明 |
+|---|---|
+| `--scale mmd` | 預設，依包圍盒高度歸一到 MMD 標準身高（20 單位） |
+| `--scale 0.14` | 手動指定縮放倍率 |
+| `--edge` | 給材質開啟 MMD 輪廓線（預設關閉） |
+| `--force-double-sided` | 材質強制雙面描繪（薄片頭髮 / 裙擺常用） |
+| `--no-textures` | 不找貼圖，匯出白模 |
+| `--keep-alpha` | 保留貼圖 alpha（預設依材質去 alpha） |
+| `--no-add-uv` | 丟棄 `EXTRAUVS*` 附加 UV |
+| `--raw-bone-names` | 骨骼保留原始英文名（預設轉 MMD 日文標準名，原名寫進英文名備註） |
+| `--no-ik` | 不補 MMD 足 IK 骨（預設依腿部骨鏈補 `左足ＩＫ` / `左つま先ＩＫ`） |
+| `--no-morphs` | 不匯出表情（預設把 MRPH 頂點位移轉成 PMX 頂點表情） |
+| `--fbx` | 在 PMX 旁邊同時寫一份 ASCII FBX |
+| `--name` | 指定模型名 |
 
 更詳細的參數與格式映射，見 `FBX轉PMX_使用說明.md` 與 `VRM互轉_使用說明.md`。
 
@@ -264,14 +330,50 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
   若仍看到黑邊，請在 MMD / PMXEditor 裡選取全部材質，確認**輪廓線已關閉**並勾選**「雙面描繪」**。
 - **仍有鏤空**：先看日誌裡 `繞序自動判定` 那行。判定錯了加 `--flip-winding`；薄片幾何（頭髮 / 裙擺）依賴雙面渲染則加 `--force-double-sided`，或勾選介面的「材質強制雙面」。
 
+### 模型背對鏡頭 / 朝向不對
+
+- FBX 裡沒有「正面朝哪」這個欄位，所以不可能每次都猜對。勾選 FBX 選項頁的**「自動判定朝向」**（預設開），
+  程式會先按**腳尖方向**、不行再按**臉部網格重心**判定，然後把結果和依據寫進日誌（形如 `自動判定朝向：面朝 +Z（依據：腳尖）`）。
+- 兩個判據都取不到（骨骼名稱不合規範，也沒有可識別的臉部網格）時會退回預設策略 —— 此時如果 MMD 裡模型**背對著鏡頭**，
+  勾上**「強制額外轉 180°」**（命令列 `--face-180`）即可。它只是把 X、Z 同時取反（＝繞 Y 轉半圈），
+  頂點數、面數、骨骼數以及三角形繞序判定都不受影響。
+- 判定結果不對時，`--no-auto-facing` 關掉判定再配合 `--face-180` 手動兜，等價於外掛裡的 `AutoDetectFacing=false` + `Rot180Y=true`。
+- **PSK / PSKX 不受此影響**：Unreal 的 PSK 格式有明確的軸約定（`-Y` 是正面），
+  所以換軸是固定的一次反射，不需要判定。若手上的 PSK 轉出來是背對的，
+  說明來源檔案的軸約定與常規不同，請在 PMXEditor 裡繞 Y 轉 180° 處理。
+
+### 該透明的地方不透明 / 不該透明的地方發透
+
+- **整塊半透、出現鬼影**：多半是遊戲貼圖把 alpha 當發光 / 高光遮罩用。用 `--alpha strip`（介面選「全部去除」）；
+  日常建議就用預設的 `auto`，它會逐張判定，只處理判定為遮罩的那些。
+- **蕾絲 / 薄紗 / 髮梢變成硬邊**：說明真透明被削掉了，改回 `auto` 或選 `keep`。
+- 無論哪一檔，**來源貼圖原圖都不會被改寫**：去 alpha 的結果寫到 `<名>_noalpha.png` 副本，只有材質引用被改成副本。
+- 日誌裡 `貼圖透明通道` 一段會逐張列出「貼圖名稱 → 去透明 / 保留（透明 x%、實心 y%）」，拿不準時直接看這段。
+
+### 身上蓋了一塊灰白大板 / 看起來像「貼圖被翻錯」
+
+- 先別急著翻 UV。遊戲（Unity / 米哈遊系）FBX 裡常有一張 `EffectMesh`：**沒有材質節點、沒有貼圖**，
+  UV 鋪滿整張圖集，幾何是一片橫跨全身的薄板。它被當成普通網格匯出去，在 MMD 裡就是一塊不透明灰板，
+  正好壓在裙子上 —— 視覺上非常像「貼圖上下／左右翻了」，但 UV 其實一點都沒錯。
+- 本工具**預設跳過所有沒掛材質的網格**，日誌會印出 `skip <網格名> tris=<n> (no material / effect sheet)`。
+  想確認是不是這個原因，看日誌裡有沒有這行。
+- 萬一某張無材質網格你確實需要，加 `--keep-untextured-meshes`（介面不提供該開關，需命令列）。
+
 ### 已知限制
 
 - **FBX 結構**：二進位 FBX 7.x 與 ASCII FBX **都能讀**（舊文件裡「不支援 ASCII」的說法已過時）。
 - **貼圖格式**：DDS / KTX2 / WebP 會被跳過（材質退化為純色）。
 - **物理**：PMX 剛體/關節 ↔ VRM SpringBone **不會互相轉換**。
-- **材質效果**：球諧貼圖（.sph/.spa）、toon 貼圖在 VRM 側不保留。
+- **材質效果**：球諧貼圖（.sph/.spa）、toon 貼圖在 VRM 側不保留；反向（→ PMX）時本工具一律不上 toon。
 - **骨骼名**：FBX 轉換保留英文骨骼名（`Hips`、`Spine` …），直接套 MMD 現成動作（.vmd）匹配不上，需在 PMXEditor 裡批次改為日文標準名。
+  PSK 走的是另一條路：Bip001 那套 3dsMax Biped 命名**預設就轉成 MMD 標準日文名**，英文原名寫進骨骼的英文名備註。
 - **表情**：源模型沒有 BlendShape / morph 時，PMX 表情也為 0，需手工建。
+- **PSK 只支援單向**：`.psk` / `.pskx` 只能轉成 PMX，不支援反向匯出。
+- **PSK 的座標系是固定映射**：Unreal 的 PSK 是「`+X` 左手、`-Y` 正面、`+Z` 上」，
+  PMX 是「`+X` 左手、`-Z` 正面、`+Y` 上」，兩者手性相反，所以換軸必須做**一次反射**
+  （`(x, y, z) → (x, z, y)`）。這一步是寫死的，沒有 FBX 那樣的「自動判定朝向」開關。
+- **`.psk` 的副檔名衝突**：PmxEditor 用 `.psk` 存它的「錨點資料」，和 Unreal 的網格同名。
+  詳見上面「PmxEditor 報 アンカーデータの読み込みに失敗しました」一節。
 
 ### MMD 提示無法載入（編碼問題）
 
@@ -284,6 +386,45 @@ MMD **只接受文字編碼為 UTF-16LE 的 PMX**。程式內的原版提示是
 本工具輸出的 PMX 一律為 UTF-16LE。舊版匯出的檔案可用
 `python formats/pmxio.py "舊檔.pmx"` 修復；介面的驗證日誌也會直接提示
 `文本编码是 UTF-8，MMD 无法载入（需要 UTF-16LE）`。
+
+### PmxEditor 報「アンカーデータの読み込みに失敗しました。」（點確定後模型照常顯示）
+
+**這不是 MMD 的錯誤，是 PmxEditor 的**，而且和 PMX 檔案本身無關。
+
+PmxEditor 有一個「錨點（アンカー）」功能，用來依空間區域批次設定骨骼與頂點的權重關係。
+它的資料**不能存進 PMX**，而是單獨存成 `*.psk` 檔（PmxEditor 稱它為「PMX スケルトン」）。
+開啟模型時，PmxEditor 會去找**和模型同名**的那個 `.psk` 並自動載入 —— 見它的選單
+`[ファイル] → [アンカーデータの自動読み込み／保存]`，readme 原文：
+
+> `[アンカーデータの自動読み込み／保存]` - モデルファイル名と同名のアンカーデータファイル(\*.psk)がある場合自動読み込み
+
+問題在於 **`.psk` 同時也是 Unreal ActorX 網格的副檔名**，也就是本工具的輸入格式。
+於是「`R2T1FeiBiMd10011.psk` 轉出 `R2T1FeiBiMd10011.pmx`」這種最自然的命名，會讓
+PmxEditor 把那個 Unreal 網格當成自己的錨點資料去解析 —— 當然解析失敗，彈這一句。
+
+**影響：沒有。** 點確定後 PmxEditor 只是跳過錨點資料，模型照常載入。想徹底不彈：
+
+1. 把輸出的 PMX 挪到別的資料夾，或者改個名（不叫 `xxx.pmx` 就行）；
+2. 在 PmxEditor 裡關掉 `[ファイル] → [アンカーデータの自動読み込み／保存]`。
+
+本工具在轉換時如果偵測到輸出 PMX 旁邊有同名的 `.psk` / `.pskx`，會在日誌裡直接提示這一點。
+
+### 關於 Toon
+
+本工具**所有方向寫出的 PMX 都不使用 Toon**：材質寫成 `toon_flag=0` + `toon=-1`，
+在 PMXEditor / MMD 裡看就是「なし」。
+
+⚠️ 順便記一個容易踩的坑：PMX 材質的 toon 欄位寬度由「共有Toonフラグ」決定，兩個方向都別搞反：
+
+| flag | 含義 | 欄位 |
+|---|---|---|
+| `1` | 共享 / 內建 toon | **1 位元組編號**，引用 MMD 安裝目錄 `Data/` 下的 `toon01.bmp` … `toon10.bmp`，**編號 0 就是 `toon01.bmp`** |
+| `0` | 本模型貼圖表裡的貼圖 | 貼圖索引寬度，**`-1` = なし（不使用）** |
+
+「編號 0 = `toon00.bmp` = 不使用 toon」是個流傳很廣的誤解 —— **MMD 的 `Data/` 目錄裡根本沒有
+`toon00.bmp`**（只有 `toon01` … `toon10`），mmd_tools 原始碼裡也寫死了 `toon%02d.bmp % (shared + 1)`。
+所以寫 `flag=1, toon=0` 實際等於給每個材質硬套了一層 `toon01.bmp`。
+本工具 2026-09-24 之前的版本就是這個寫法，已修正為 `flag=0, toon=-1`。
 
 ### 拖放相關
 

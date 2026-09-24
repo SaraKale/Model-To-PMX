@@ -526,7 +526,14 @@ def convert(path, out_path, scale_mode="mmd", lod_index=0, log=None,
             "edge_color": (0.0, 0.0, 0.0, 1.0),
             "edge_size": 1.0 if enable_edge else 0.0,
             "tex": ti, "sph": -1, "sph_mode": 0,
-            "toon_flag": 1, "toon": 0, "memo": "",
+            # toon：**不使用**。
+            # ⚠ 方向极易搞反：flag=1 才是内建 toon（1 字节编号，引用 MMD 的
+            #   toon01.bmp..toon10.bmp，**编号 0 = toon01.bmp 而不是「不使用」**，
+            #   见 mmd_tools 的 `"toon%02d.bmp" % (shared + 1)`，且 MMD 的 Data
+            #   目录里根本没有 toon00.bmp）；flag=0 是本模型纹理表索引，
+            #   **-1 = なし**。所以「不使用 toon」= flag 0 + 索引 -1。
+            # 2026-09-24 修：以前写 flag=1/0，等于硬套一层 toon01.bmp。
+            "toon_flag": 0, "toon": -1, "memo": "",
             "faces": n_face,
             "_tex_file": (os.path.basename(pmx_textures[ti])
                           if isinstance(ti, int) and 0 <= ti < len(pmx_textures)
@@ -539,7 +546,7 @@ def convert(path, out_path, scale_mode="mmd", lod_index=0, log=None,
             "shininess": 0.0, "ambient": (0.5, 0.5, 0.5),
             "flag": 0x0E | (0x10 if enable_edge else 0), "edge_color": (0.0, 0.0, 0.0, 1.0),
             "edge_size": 1.0 if enable_edge else 0.0, "tex": -1, "sph": -1,
-            "sph_mode": 0, "toon_flag": 1, "toon": 0, "memo": "",
+            "sph_mode": 0, "toon_flag": 0, "toon": -1, "memo": "",
             "faces": len(pmx_faces) // 3,
         })
     else:

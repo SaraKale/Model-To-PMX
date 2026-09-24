@@ -31,7 +31,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name='ModelConvert.exe',
-    icon='图标2.ico',
+    icon='MC_2.ico',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

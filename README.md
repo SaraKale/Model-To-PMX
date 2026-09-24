@@ -1,6 +1,6 @@
-# FBX / VRM / PMX Model Converter (Pure Python)
+# Model Converter (Pure Python)
 
-Convert `.fbx`, `.unitypackage`, `.vrm`, `.pmx`, and `.uemodel` (UEFormat) into each other, **entirely with the Python standard library**.
+Convert `.fbx`, `.unitypackage`, `.vrm`, `.pmx`, and `.uemodel` (UEFormat) into each other — and `.psk` / `.pskx` (Unreal ActorX) into PMX — **entirely with the Python standard library**.
 No Blender / Autodesk FBX SDK / Unity 3D required, and no plugins such as mmd_tools / UniVRM.
 It reads and writes the binary formats directly — just drag a file into the window to convert.
 
@@ -24,6 +24,7 @@ Download the latest version from [releases](https://github.com/SaraKale/Model-to
 | PMX → VRM (0.x / 1.0) | Auto-writes VRM meta, humanoid bone mapping, and morph targets |
 | uemodel (UEFormat) → PMX | Reads the public UEFormat `.uemodel` (v1–v10); can also write an ASCII FBX in the same run |
 | PMX → uemodel (UEFormat) | Writes UEFormat `.uemodel` (v9 by default, v10 optional) for the UE / FModel toolchain |
+| PSK / PSKX (Unreal ActorX) → PMX | Reads Unreal `.psk` (`FACE0000`) / `.pskx` (`FACE3200`) with skin weights, MRPH vertex morphs and extra UVs |
 | PMX → validation + preview only | Read-only structural validation; no file output |
 
 ### Core features
@@ -35,14 +36,20 @@ Download the latest version from [releases](https://github.com/SaraKale/Model-to
 - **Selected-file list**: after dropping, the files (name / format / size) and the total size are listed right under the drop
   area. You can append more, remove single rows, or double-click one row to preview just that file — so **you can see at a
   glance what this batch will convert**, and nothing runs until you click "Start conversion".
-- **Real-time back-view preview**: Drag in a model and see the 3D back view immediately; drag to rotate / scroll to zoom,
-  and overlay bone points to check alignment.
+- **Real-time front-view preview**: Drag in a model and see the 3D front view immediately; drag to rotate / scroll to zoom,
+  and overlay bone points to check alignment (the Front / Left / Back / Top buttons are named after **which side of the model you see**).
+- **Never applies Toon**: Every PMX written by every direction uses `toon_flag=0` + `toon=-1`,
+  i.e. "no toon" in MMD terms.
 - **Multilingual UI**: Switch between Simplified Chinese / Traditional Chinese / English / Japanese in the top-right; the choice is saved to config.
 - **HiDPI friendly**: Auto-scales to system DPI; the top-right "UI zoom" lets you set a manual factor.
 - **Tabbed options**: The options area is split into five tabs — General / FBX / VRM / UE / Output — for easy extension.
 - **Automatic winding-order detection**: Triangle winding is auto-decided by voting between geometric-face normals and vertex normals,
   avoiding large holes / outline lines smearing into black blobs.
 - **Texture handling**: PNG/JPEG pass through directly; BMP/TGA are converted to PNG on the fly; embedded in GLB or exported to the PMX directory.
+- **PSK / PSKX support**: Reads both `.psk` (`FACE0000`) and `.pskx` (`FACE3200`), carrying over skin weights,
+  MRPH vertex morphs and `EXTRAUVS*` extra UV sets. The Bip001 (3ds Max Biped) bone naming is mapped to
+  MMD standard Japanese bone names (`センター` / `上半身` / `左足ＩＫ` …) with the **original English name kept in the
+  bone's English-name field**, so nothing is lost.
 
 ---
 
@@ -68,6 +75,7 @@ Model-to-PMX/
 │   ├── pmxio.py                 #   Full PMX 2.0 read/write (incl. morph/IK/additional/rigidbody/joint)
 │   ├── vrmio.py                 #   GLB/glTF container read/write + PNG encode + BMP/TGA decode
 │   ├── uemodelio.py             #   UEFormat .uemodel read/write (v1–v10)
+│   ├── pskio.py                 #   Unreal ActorX .psk / .pskx reader
 │   ├── fbxout.py                #   ASCII FBX 7.4 writer (the "also export FBX" option)
 │   └── unitypackage_unpack.py   #   Unpack .unitypackage (gzip tar)
 │
@@ -77,10 +85,11 @@ Model-to-PMX/
 │   ├── pmx2vrm.py               #   PMX → VRM
 │   ├── uemodel2pmx.py           #   uemodel (UEFormat) → PMX (+ optional ASCII FBX)
 │   ├── pmx2uemodel.py           #   PMX → uemodel (UEFormat)
+│   ├── psk2pmx.py               #   PSK / PSKX (Unreal ActorX) → PMX
 │   └── pmx_check.py             #   PMX validation + software-rendered preview image
 │
 ├── gfx/
-│   └── preview.py               # Real-time 3D back-view preview widget
+│   └── preview.py               # Real-time 3D front-view preview widget
 │
 ```
 
@@ -108,12 +117,25 @@ Model-to-PMX/
 UI highlights:
 
 - **Split view**: drag the divider in the middle to resize, just like Blender's areas; the position is saved in `config.json`
-- **Full-height preview column**: live back view, with Front / Left / Back / Top / Reset / Spin / Bones / Wire in the toolbar below it
+- **Full-height preview column**: live front view, with Front / Left / Back / Top / Reset / Spin / Bones / Wire in the toolbar below it.
+  The four view buttons are named after **which side of the model you see**: Front = you see the face (camera at `-Z`, which is
+  MMD's front), Back = you see the back (camera at `+Z`), Left = you see the model's left side (camera at `+X`; in MMD `+X` is
+  the model's left hand side), Top = looking down from above
 - **Render backend badge (bottom-right of the preview)**: shows whether `Pillow` or pure Python is in use, plus the last frame time in ms
 - **"Language" (top-right)**: Simplified Chinese / Traditional Chinese / English / Japanese (the preview toolbar follows too)
 - **"UI zoom" (top-right)**: Auto-follows system DPI, or set a manual factor
 - **Option tabs**: General / FBX / VRM / UE / Output, five tabs
 - **UE tab**: when the `.uemodel` → PMX task is selected, tick "also export an FBX file" to get an ASCII FBX next to the PMX; the same tab sets target height (cm) and alpha handling
+- **FBX tab**: three settings; changing them updates both the preview and the "Start conversion" result immediately
+  - **Texture alpha channel**: `Keep` (as-is) / `Auto (recommended)` / `Strip all`.
+    MMD treats texture alpha directly as material opacity, while game textures often abuse alpha as an emissive or specular mask.
+    Those masks must be stripped, otherwise the model turns half-transparent or shows ghost artifacts; real transparency must be kept, otherwise lace, veils and hair tips get clipped into hard edges.
+    `Auto` samples only the UV area the texture actually uses (up to 4000 points) and asks whether "almost-fully-transparent ≥ 75% **and** opaque ≤ 5%", cross-checked against whole-image statistics.
+    Only when both agree is it treated as a mask — then a copy named `<name>_noalpha.png` is written and **the material is repointed at the copy; the original texture file is never modified**.
+  - **Auto-detect facing**: FBX has no "which way does the model face" field. The handedness conversion needs a single-axis reflection, and which axis you reflect decides whether the model ends up facing or facing away from the camera.
+    With this on it tries **toe direction** (sum of toe bone offsets relative to their parents, only counted when `|x| << |z|`), then falls back to **face mesh centroid** (weighted centre of face / head / eye / mouth / brow meshes versus the whole-body centre). The verdict and the evidence both go into the log.
+  - (Always on) **Meshes with no material attached are skipped**. Game exports (Unity / HoYo style) often carry a sheet named `EffectMesh`: no material node, no texture, UVs spread over the whole atlas, geometry a thin plate spanning the body. Exported as a normal mesh it becomes an opaque grey slab lying on top of the dress — which looks exactly like "the texture got flipped", when in fact the UVs are fine and only the base color is covered up. The log prints `skip <mesh> tris=<n> (no material / effect sheet)`.
+  - **Force extra 180° turn**: adds another 180° around Y on top of the detected result. Use it only when auto-detection finds nothing (both heuristics unavailable) or when you genuinely want the model facing away.
 - **Textures in the exported FBX**: the written FBX **flips the UV V axis** (PMX/MMD put the UV origin top-left, FBX / Blender / Maya bottom-left) and references textures as a relative path `textures/…`. Keep the FBX next to the PMX together with its `textures` folder — otherwise the shape looks right but the patterns are shifted all over
 - **Enlarged checkboxes**: The checkboxes and click areas are easier to hit
 
@@ -140,6 +162,11 @@ python main.py
 # FBX → PMX
 python convert/fbx2pmx.py "model.fbx" -o "model.pmx"
 
+# FBX → PMX: pick the alpha mode / disable facing detection / force another 180°
+python convert/fbx2pmx.py "model.fbx" -o "model.pmx" --alpha auto
+python convert/fbx2pmx.py "model.fbx" -o "model.pmx" --alpha strip
+python convert/fbx2pmx.py "model.fbx" -o "model.pmx" --no-auto-facing --face-180
+
 # Unpack a unitypackage (--list lists contents without unpacking)
 python formats/unitypackage_unpack.py "pack.unitypackage" --list
 python formats/unitypackage_unpack.py "pack.unitypackage"
@@ -162,6 +189,12 @@ python convert/uemodel2pmx.py "model.uemodel" -o "model.pmx" --fbx
 python convert/pmx2uemodel.py "model.pmx" -o "model.uemodel"
 python convert/pmx2uemodel.py "model.pmx" -o "model.uemodel" --version 10
 
+# PSK / PSKX (Unreal ActorX) → PMX
+# Bone names become MMD standard Japanese names by default (originals go to the English-name field);
+# textures are looked up by material name in the source folder
+python convert/psk2pmx.py "model.psk" -o "model.pmx"
+python convert/psk2pmx.py "model.pskx" -o "model.pmx" --raw-bone-names --no-ik
+
 # PMX validation + generate preview image
 python convert/pmx_check.py "model.pmx"
 python convert/pmx_check.py "model.pmx" --bones   # overlay bone positions
@@ -181,13 +214,47 @@ python formats/pmxio.py "model.pmx" --in-place    # overwrite (back up first)
 | `--scale raw` | Keep FBX's original size (meters) |
 | `--scale 12.5` | Manually specify a scale factor |
 | `--no-flip-z` | Skip right-handed → left-handed conversion (on by default) |
+| `--alpha keep\|auto\|strip` | Texture alpha handling, default `auto` (see below) |
+| `--remove-alpha` | Legacy switch, equivalent to `--alpha auto` |
+| `--no-auto-facing` | Disable facing auto-detection, use the default single-axis reflection (Z) |
+| `--face-180` | Force an extra 180° turn on top of the detected result |
+| `--keep-untextured-meshes` | Keep meshes that carry no material (skipped by default, see "effect sheet" below) |
 | `--info` | Only print structure info, no conversion |
+
+What the three `--alpha` modes do:
+
+| Mode | Behaviour |
+|---|---|
+| `keep` | Leave alpha alone; reference the original texture files directly |
+| `auto` (default) | Judge per texture: only ones classified as a mask get an alpha-free copy `<name>_noalpha.png` and a repointed material; genuinely translucent or fully opaque ones are kept as-is |
+| `strip` | Strip alpha from anything that has an alpha channel (the old behaviour) |
+
+Detection thresholds (identical to the `PEPlugins-FBXimport` plug-in): alpha < 8 counts as transparent, > 250 as opaque;
+the UV-area sampling (up to 4000 points) and whole-image statistics must corroborate each other, and **transparent ≥ 75% with opaque ≤ 5%** is required to call it a mask.
+With no usable UV it falls back to 90% / 1% over the whole image. Per-texture verdicts (name → strip / keep plus the transparent and opaque ratios) are written to the log.
 
 `pmx2vrm.py`: `--spec 1.0|0x`, `--scale auto|factor`, `--rotate auto|none|y180`,
 `--flip-winding`, `--force-double-sided`, `--max-morphs N`, `--title` / `--author`.
 
 `vrm2pmx.py`: `--scale`, `--rotate`, `--flip-winding`, `--edge` (enable outline),
 `--force-double-sided`, `--name`.
+
+`psk2pmx.py`:
+
+| Option | Description |
+|---|---|
+| `--scale mmd` | Default; normalizes height to MMD's standard 20 units via the bounding box |
+| `--scale 0.14` | Manual scale factor |
+| `--edge` | Enable MMD outline on materials (off by default) |
+| `--force-double-sided` | Force two-sided drawing (common for thin hair / skirts) |
+| `--no-textures` | Don't look for textures; export an untextured model |
+| `--keep-alpha` | Keep texture alpha (by default alpha is stripped per material) |
+| `--no-add-uv` | Drop `EXTRAUVS*` extra UV sets |
+| `--raw-bone-names` | Keep the original English bone names (default: convert to MMD Japanese names, originals kept in the English-name field) |
+| `--no-ik` | Don't add MMD leg IK bones (default: add `左足ＩＫ` / `左つま先ＩＫ` when the leg chain is complete) |
+| `--no-morphs` | Don't export morphs (default: convert MRPH vertex offsets into PMX vertex morphs) |
+| `--fbx` | Also write an ASCII FBX next to the PMX |
+| `--name` | Model name |
 
 For more detailed options and format mappings, see `FBX转PMX_使用说明.md` and `VRM互转_使用说明.md`.
 
@@ -269,14 +336,43 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 - **Black lines on model edges after conversion**: The converter now disables the MMD outline by default (vertex edge=0, material edge_size=0, edge_color alpha=0). If you still see black edges, open the model in MMD / PMXEditor, make sure the **outline is turned off** for all materials, and check **"Double-sided drawing"**.
 - **Still has holes**: First look at the `绕序自动判定` (auto winding-order detection) line in the log. If it's wrong, add `--flip-winding`; if thin geometry (hair / skirt) relies on double-sided rendering, add `--force-double-sided`, or check "Force double-sided materials" in the UI.
 
+### Model facing away / wrong direction
+
+- FBX stores no "which way is forward" field, so no heuristic is right 100% of the time. Keep **"Auto-detect facing"** on (default) in the FBX tab and the converter tries **toe direction** first, then **face mesh centroid**, writing both the verdict and the evidence to the log (`自动判定朝向：面朝 +Z（依据：脚尖）`).
+- When neither heuristic yields anything (non-standard bone names and no recognizable face mesh) it falls back to the default reflection. If the model then **faces away from the camera** in MMD, tick **"Force extra 180° turn"** (`--face-180`): it just negates X and Z together (half a turn around Y), leaving vertex / face / bone counts and the winding-order detection untouched.
+- If the verdict itself is wrong, disable it with `--no-auto-facing` and dial it in manually with `--face-180` — the equivalent of `AutoDetectFacing=false` + `Rot180Y=true` in the plug-in.
+- **PSK / PSKX is not affected by any of this**: the Unreal PSK format has a well-defined axis convention
+  (`-Y` is the front), so the axis swap is a fixed single reflection and needs no detection. If a PSK you have
+  comes out facing away, its source convention differs from the norm — rotate it 180° around Y in PMXEditor.
+
+### Transparent where it shouldn't be / opaque where it should be
+
+- **Whole model half-transparent, ghost artifacts**: the texture almost certainly uses alpha as an emissive / specular mask. Use `--alpha strip` ("Strip all" in the UI); day to day leave it on `auto`, which judges each texture and only processes the ones classified as masks.
+- **Lace / veils / hair tips clipped into hard edges**: real transparency got stripped — switch back to `auto` or pick `keep`.
+- In every mode **the source texture file itself is never modified**: the stripped result goes to a `<name>_noalpha.png` copy and only the material reference is repointed.
+- The `贴图透明通道` block in the log lists every texture as "name → strip / keep (transparent x%, opaque y%)" — read that when you're unsure.
+
+### A grey slab covers the model / looks like "the UVs got flipped"
+
+- Don't reach for the UVs yet. Game FBX files (Unity / HoYo style) often contain an `EffectMesh` with **no material node and no texture**, UVs spread across the whole atlas, geometry a thin plate spanning the body. Exported as an ordinary mesh it becomes an opaque grey slab sitting right on top of the skirt — visually almost identical to "the texture is flipped vertically", but the UVs are actually correct.
+- The converter **skips every mesh that has no material** by default, and logs `skip <mesh> tris=<n> (no material / effect sheet)`. Check the log for that line to confirm.
+- If you do need such a mesh, pass `--keep-untextured-meshes` (there is no UI toggle for it; command line only).
+
 ### Known limitations
 
 - **FBX structure**: both binary FBX 7.x and ASCII FBX are read (the older "ASCII is not supported" note was wrong).
 - **Texture formats**: DDS / KTX2 / WebP are skipped (material degrades to a solid color).
 - **Physics**: PMX rigidbody/joint ↔ VRM SpringBone are **not** converted between each other.
-- **Material effects**: Spherical maps (.sph/.spa) and toon maps are not preserved on the VRM side.
+- **Material effects**: Spherical maps (.sph/.spa) and toon maps are not preserved on the VRM side; in the other direction (→ PMX) this tool never applies toon.
 - **Bone names**: FBX conversion keeps English bone names (`Hips`, `Spine` …), so they won't match MMD's ready-made motions (.vmd); you must batch-rename them to the Japanese standard names in PMXEditor.
+  PSK takes a different route: the Bip001 (3ds Max Biped) naming is **converted to MMD standard Japanese names by default**, with the original English name kept in the bone's English-name field.
 - **Morphs**: When the source model has no BlendShape / morph, the PMX morphs are also 0 and must be created by hand.
+- **PSK is one-way only**: `.psk` / `.pskx` can only be converted to PMX; there is no reverse export.
+- **PSK axes are a fixed mapping**: Unreal's PSK is "`+X` left hand, `-Y` front, `+Z` up" while PMX is
+  "`+X` left hand, `-Z` front, `+Y` up" — opposite handedness, so the axis swap must include **one reflection**
+  (`(x, y, z) → (x, z, y)`). This is hard-coded; there is no "auto-detect facing" switch like FBX has.
+- **The `.psk` extension collides**: PmxEditor stores its "anchor data" in `.psk` files, the same extension Unreal meshes use.
+  See "PmxEditor reports アンカーデータの読み込みに失敗しました" below.
 
 ### MMD says it cannot load the model (text encoding)
 
@@ -289,6 +385,47 @@ The Chinese localizations render it as "MMD 不能载入编码为 UTF16 的 PMX 
 This tool always writes UTF-16LE. Files exported by older builds can be fixed with
 `python formats/pmxio.py "old.pmx"`; the validation log also reports
 `文本编码是 UTF-8，MMD 无法载入（需要 UTF-16LE）`.
+
+### PmxEditor reports "アンカーデータの読み込みに失敗しました。" (the model still shows up after you click OK)
+
+**This is not an MMD error — it comes from PmxEditor**, and it has nothing to do with the PMX file itself.
+
+PmxEditor has an "anchor" (アンカー) feature for assigning bone-to-vertex weights in bulk over a spatial region.
+Its data **cannot be stored inside a PMX**; it is saved separately as a `*.psk` file (PmxEditor calls it a
+"PMX skeleton"). When opening a model, PmxEditor looks for the `.psk` **with the same base name as the model**
+and loads it automatically — see its menu `[ファイル] → [アンカーデータの自動読み込み／保存]`. From its readme:
+
+> `[アンカーデータの自動読み込み／保存]` - モデルファイル名と同名のアンカーデータファイル(\*.psk)がある場合自動読み込み
+
+The catch: **`.psk` is also the extension of Unreal ActorX meshes**, which is exactly what this tool reads.
+So the most natural naming — converting `R2T1FeiBiMd10011.psk` into `R2T1FeiBiMd10011.pmx` — makes PmxEditor
+try to parse that Unreal mesh as its anchor data, which of course fails and raises this message.
+
+**Impact: none.** After clicking OK, PmxEditor simply skips the anchor data and the model loads normally.
+To stop the popup entirely:
+
+1. Move the output PMX to another folder, or rename it (anything but `xxx.pmx` next to `xxx.psk`); or
+2. Turn off `[ファイル] → [アンカーデータの自動読み込み／保存]` in PmxEditor.
+
+When a same-named `.psk` / `.pskx` sits next to the output PMX, this tool says so in the log.
+
+### About Toon
+
+Every PMX this tool writes, in every direction, **does not use Toon**: materials are written as
+`toon_flag=0` + `toon=-1`, which PMXEditor / MMD show as "なし" (none).
+
+⚠️ One easy-to-get-wrong detail worth recording: the width of a PMX material's toon field depends on the
+"shared toon flag" byte, and the two directions are easy to swap:
+
+| flag | Meaning | Field |
+|---|---|---|
+| `1` | Shared / built-in toon | **1 byte index** referring to `toon01.bmp` … `toon10.bmp` in MMD's `Data/` folder — **index 0 *is* `toon01.bmp`** |
+| `0` | A texture from this model's texture table | Texture-index width, where **`-1` = none** |
+
+"Index 0 = `toon00.bmp` = no toon" is a widespread misconception — **MMD's `Data/` folder contains no
+`toon00.bmp` at all** (only `toon01` … `toon10`), and mmd_tools hard-codes `toon%02d.bmp % (shared + 1)`.
+So writing `flag=1, toon=0` actually forces a `toon01.bmp` onto every material. Versions of this tool
+before 2026-09-24 did exactly that; it is now fixed to `flag=0, toon=-1`.
 
 ### Drag & drop
 

@@ -2,7 +2,7 @@
 """preview.py - 全格式模型实时预览（纯 Python 标准库）。
 
 把 .pmx / .vrm / .fbx / .unitypackage 读成统一的“预览网格”（顶点 / 三角面 /
-逐面颜色 / 骨骼），在 tkinter 画布里做**背视图**实时交互预览（默认即背视图，
+逐面颜色 / 骨骼），在 tkinter 画布里做**实时交互预览**（默认就是**正面**，
 也可拖动旋转 / 滚轮缩放 / 右键平移 / 一键复位查看其它角度）。
 
 预览**只实时显示、不落盘保存图片**；如需把模型渲染成 PNG，请用命令行
@@ -20,7 +20,7 @@ render_to_png / `python preview.py "model.pmx" -o out.png`（独立于实时预�
 
 主要接口：
     load_preview(path, kind=None, log=None)  -> Mesh
-    Preview3D(master, size=480, ...)         # tkinter 实时预览控件（背视图）
+    Preview3D(master, size=480, ...)         # tkinter 实时预览控件（默认正面）
     Rasterizer(mesh, size, ...).step(n)      # 可分片推进的软光栅器
     render(mesh, size, ...)                  # 一次画完，返回 (W, H, buf)
     render_to_png(mesh, path, size=560, ...) # 仅命令行离屏渲染用，GUI 预览不调用
@@ -94,7 +94,20 @@ PREVIEW_TEX_MAX = 2048
 # 以前会被当成实心画出来（透明区通常是黑的），于是满屏黑边黑点。
 ALPHA_CUT = 90
 
-# 默认预览视角：背视图（yaw=180°，朝模型背面看）。实时预览只显示不保存。
+# 默认预览视角：**正面**（yaw=180°）。实时预览只显示不保存。
+#
+# ⚠ 2026-09-24 理顺：yaw 的语义以前是反的，注释和按钮都写错了。实测确认
+# （拿用户本机的 Anastasya.pmx 渲染 yaw=0 / yaw=180 对比，一眼就能看出来）：
+#     yaw =   0° → 相机在模型的 **+Z** 侧 → 看到**背面**
+#     yaw = 180° → 相机在模型的 **-Z** 侧 → 看到**正面**（脸）
+# 因为 MMD / PMX 的约定是 **正面 = -Z**（+X = 模型左手、+Y = 上）。
+#
+# 推导：相机方向 d = (-cosφ·sinθ, sinφ, cosφ·cosθ)（φ=pitch、θ=yaw，
+# 相机在 z_view 的 +∞ 侧，深度测试是「z 大的赢」）。
+# θ=0 → d=(0,0,1) 相机在 +Z（背面）；θ=180 → d=(0,0,-1) 相机在 -Z（正面）。
+#
+# 所以下面这个 180° 本来就是对的（默认给正面，符合直觉），错的是「背视图」
+# 这个叫法和按钮映射 —— 都已在本次一并改正。
 DEFAULT_YAW = math.radians(180.0)
 DEFAULT_PITCH = 0.0
 
@@ -425,7 +438,7 @@ class Mesh:
         self._tex_state = None  # 渐进式贴图：延迟解码用的素材，解码后置 None
         self.rev = 0            # 每次重算逐面颜色就 +1，预览控件据此判断是否需要重绘
 
-    # -- 渐进式贴图：先以基色出背视图，后台再解码贴图并重绘
+    # -- 渐进式贴图：先以基色出正面视图，后台再解码贴图并重绘
     def load_textures(self):
         """把延迟的贴图解码出来并重新计算逐面颜色；无待解码时返回 False。"""
         st = self._tex_state
@@ -479,6 +492,10 @@ class Mesh:
             folder = st["folder"]
             mats, n_tex = _uemodel_mats(folder, st["materials"],
                                         with_textures=True)
+            _resolve_face_colors(self, st["face_mat"], mats)
+        elif kind == "psk":
+            mats, n_tex = _psk_mats(st["folder"], st["materials"],
+                                    with_textures=True)
             _resolve_face_colors(self, st["face_mat"], mats)
         self._tex_state = None
         self.rev += 1
@@ -828,15 +845,33 @@ def mesh_from_vrm(path, log=None, with_textures=True):
 
 
 # ------------------------------------------------------------------- FBX -----
-def mesh_from_fbx(path, flip_z=True, log=None, with_textures=True):
+def mesh_from_fbx(path, flip_z=True, log=None, with_textures=True,
+                  auto_facing=True, face_180=False, skip_untextured=True):
     import fbx2pmx
     scene = fbx2pmx.Scene(path)
     mesh = Mesh(os.path.splitext(os.path.basename(path))[0])
     fbx_dir = os.path.dirname(os.path.abspath(path))
 
+    # 朝向判定必须与 fbx2pmx.convert 用同一套判据，否则预览和转出来的结果会对不上
+    if auto_facing:
+        _turn, _why = fbx2pmx.detect_forward_turn(scene)
+        if _turn is None:
+            _turn = bool(face_180)
+        turn = bool(_turn)
+    else:
+        turn = bool(face_180)
+
     def xf(p):
+        # 与 fbx2pmx.convert 的 xfd() 同一套规则（详见那边的注释）：
+        # turn = 把单轴反射从 Z 换成 X，等价于在成品上绕 Y 转 180°。
         x, y, z = p
-        return (x, y, -z if flip_z else z)
+        if turn:
+            x = -x
+            if not flip_z:
+                z = -z
+        elif flip_z:
+            z = -z
+        return (x, y, z)
 
     # 材质 → 颜色 / 贴图
     def mat_info(mat_id):
@@ -913,6 +948,16 @@ def mesh_from_fbx(path, flip_z=True, log=None, with_textures=True):
         tris = fbx2pmx.triangulate(pvi)
         uv = fbx2pmx.sample_uv(g.get("LayerElementUV"), pvi)
         m_mats = fbx2pmx._mesh_materials(g, model, scene)
+        # 与 fbx2pmx.convert 保持一致：没有挂任何材质的网格（Unity/HoYo 系的
+        # EffectMesh 效果片）默认丢掉，否则预览里会看到一块灰白大板压在模型上。
+        if skip_untextured and fbx2pmx._mesh_has_no_material(g, model, scene,
+                                                             m_mats):
+            if log is not None:
+                try:
+                    log("skip %s (no material)" % model.name)
+                except Exception:
+                    pass
+            continue
         poly_mat = fbx2pmx._poly_material_index(g, pvi, len(m_mats))
         w = fbx2pmx.m_mul(model.world, scene._geom_matrix(scene.byid.get(mid)))
 
@@ -933,7 +978,9 @@ def mesh_from_fbx(path, flip_z=True, log=None, with_textures=True):
                 wp = xf(fbx2pmx.m_point(w, p))
                 mesh.verts.append(wp)
                 if uv is not None and corner < len(uv):
-                    mesh.uv.append(uv[corner])
+                    # PMX/MMD 的 UV 原点在左上，FBX 在左下 —— 与 fbx2pmx.convert
+                    # 里的 (u, 1.0 - v) 同一套约定，否则预览的贴图是上下颠倒的
+                    mesh.uv.append((uv[corner][0], 1.0 - uv[corner][1]))
                 else:
                     mesh.uv.append((0.0, 0.0))
                 out.append(len(mesh.verts) - 1)
@@ -1127,18 +1174,108 @@ def mesh_from_uemodel(path, log=None, with_textures=True):
     return mesh
 
 
+def _psk_mats(folder, mat_names, with_textures=True):
+    """PSK/PSKX 的材质 → 预览材质表（贴图靠同目录同名图片）。
+
+    PSK 自身只有材质名、没有颜色/贴图，找到同名 png/tga/dds 就用，
+    找不到就退回中性灰。返回 (mats, 命中贴图数)。
+    """
+    finder = None
+    if with_textures:
+        try:
+            import psk2pmx
+            finder = psk2pmx._find_texture
+        except Exception:
+            finder = None
+    mats = []
+    n_tex = 0
+    for nm in mat_names:
+        img = None
+        if finder is not None:
+            try:
+                src = finder(folder, nm)
+                if src:
+                    with open(src, "rb") as f:
+                        img = load_image(f.read())
+                    if img is not None:
+                        n_tex += 1
+            except Exception:
+                img = None
+        mats.append({"color": (204, 204, 204), "tex": img, "alpha": 1.0,
+                     "name": nm or ""})
+    if not mats:
+        mats.append({"color": (204, 204, 204), "tex": None, "alpha": 1.0,
+                     "name": ""})
+    return mats, n_tex
+
+
+def mesh_from_psk(path, log=None, with_textures=True):
+    """PSK / PSKX（Unreal ActorX）→ 预览网格。
+
+    换轴与 psk2pmx 完全一致：(x, y, z)_psk → (x, z, y)，即 Y/Z 对调。
+    PSK 是「+X 左手、-Y 正面、+Z 上」，PMX 是「+X 左手、-Z 正面、+Y 上」，
+    对调 Y/Z 正好两边都满足（推导见 convert/psk2pmx.py 里 xf() 的长注释）。
+    预览会按包围盒自动 fit，所以这里**不必**归一到 MMD 的 20 单位。
+    """
+    import pskio
+    m = pskio.read_psk(path)
+    if not m.points or not m.wedges:
+        raise ValueError("这个 PSK 里没有网格数据")
+    folder = os.path.dirname(os.path.abspath(path))
+    mesh = Mesh(os.path.splitext(os.path.basename(path))[0])
+
+    def xf(p):
+        return (p[0], p[2], p[1])       # 与 psk2pmx.convert 的 xf 同一套
+
+    names = [mt.name or ("mat%d" % i) for i, mt in enumerate(m.materials)]
+    mats, n_tex = _psk_mats(folder, names, with_textures)
+    mesh.materials = mats
+    if log:
+        log("%s：顶点 %d · 三角面 %d · 骨骼 %d · 材质 %d（贴图 %d）"
+            % ("PSKX" if m.face32 else "PSK", len(m.points),
+               len(m.faces), len(m.bones), len(m.materials), n_tex))
+
+    n_point = len(m.points)
+    for pi, _u, _v, _mi in m.wedges:
+        mesh.verts.append(xf(m.points[pi] if 0 <= pi < n_point
+                             else (0.0, 0.0, 0.0)))
+        mesh.uv.append((_u, _v))
+
+    face_mat = []
+    n_wedge = len(m.wedges)
+    for (i0, i1, i2), mi in m.faces:
+        if i0 >= n_wedge or i1 >= n_wedge or i2 >= n_wedge:
+            continue
+        mesh.tris.append((i0, i1, i2))
+        face_mat.append(mi if 0 <= mi < len(mats) else 0)
+
+    _wrot, wpos = pskio.bone_world(m)
+    mesh.bones = [xf(p) for p in wpos]
+
+    if with_textures:
+        mesh._tex_state = None
+    else:
+        mesh._tex_state = {"kind": "psk", "folder": folder,
+                           "materials": names, "face_mat": face_mat}
+
+    _resolve_face_colors(mesh, face_mat, mats)
+    return mesh
+
+
 def classify(path):
     ext = os.path.splitext(path)[1].lower()
     return {".fbx": "fbx", ".unitypackage": "unitypackage",
             ".vrm": "vrm", ".glb": "vrm", ".pmx": "pmx",
-            ".uemodel": "uemodel"}.get(ext, "unknown")
+            ".uemodel": "uemodel",
+            ".psk": "psk", ".pskx": "psk"}.get(ext, "unknown")
 
 
-def load_preview(path, kind=None, log=None, flip_z=True, with_textures=True):
+def load_preview(path, kind=None, log=None, flip_z=True, with_textures=True,
+                 auto_facing=True, face_180=False, skip_untextured=True):
     """把任意支持的模型文件读成预览网格。
 
     with_textures=False 时只解析几何与材质基色（极快），贴图留待
-    Mesh.load_textures() 在后台延迟解码——用于拖入大模型时立刻出背视图。
+    Mesh.load_textures() 在后台延迟解码——用于拖入大模型时立刻出正面视图。
     """
     if kind is None:
         kind = classify(path)
@@ -1147,11 +1284,16 @@ def load_preview(path, kind=None, log=None, flip_z=True, with_textures=True):
     if kind == "vrm":
         return mesh_from_vrm(path, log=log, with_textures=with_textures)
     if kind == "fbx":
-        return mesh_from_fbx(path, flip_z=flip_z, log=log, with_textures=with_textures)
+        return mesh_from_fbx(path, flip_z=flip_z, log=log,
+                             with_textures=with_textures,
+                             auto_facing=auto_facing, face_180=face_180,
+                             skip_untextured=skip_untextured)
     if kind == "unitypackage":
         return mesh_from_unitypackage(path, log=log, with_textures=with_textures)
     if kind == "uemodel":
         return mesh_from_uemodel(path, log=log, with_textures=with_textures)
+    if kind == "psk":
+        return mesh_from_psk(path, log=log, with_textures=with_textures)
     raise ValueError("不支持的格式：%s" % path)
 
 
@@ -1192,7 +1334,7 @@ def _shade(nx, ny, nz):
 PV_LABELS = {
     "front": "正视", "left": "左视", "back": "背视", "top": "俯视",
     "reset": "复位", "spin": "自转", "bone": "骨骼", "wire": "线框",
-    "placeholder": "拖入模型后这里实时显示背视图预览\n（按住拖动可旋转，滚轮缩放）",
+    "placeholder": "拖入模型后这里实时显示正面预览\n（按住拖动可旋转，滚轮缩放）",
 }
 
 
@@ -1205,7 +1347,7 @@ def pv_labels(**kw):
 
 if tk is not None:
     class Preview3D(tk.Frame):
-        """背视图实时预览控件：默认显示背视图，可拖动旋转、滚轮缩放、右键平移、双击复位。"""
+        """实时预览控件：默认显示**正面**，可拖动旋转、滚轮缩放、右键平移、双击复位。"""
 
         BG = "#fbfcfe"
         CARD = "#ffffff"
@@ -1239,8 +1381,10 @@ if tk is not None:
                 self.labels.update(labels)
             self.size = size
             self.mesh = None
-            self.yaw = 0.0
-            self.pitch = 0.0
+            # 初始视角 = 默认视角（正面）。2026-09-24 修：以前这里硬写 0.0，
+            # 而 0° 是**背面** —— 于是「刚打开是背面、点一下复位变正面」自相矛盾。
+            self.yaw = DEFAULT_YAW
+            self.pitch = DEFAULT_PITCH
             self.zoom = 1.0
             self.panx = 0.0
             self.pany = 0.0
@@ -1300,10 +1444,22 @@ if tk is not None:
         def _build_toolbar(self):
             tb = self._toolbar
             L = self.labels
-            self._small(tb, L["front"], lambda: self.set_view(0, 0)).pack(side="left")
-            self._small(tb, L["left"], lambda: self.set_view(90, 0)).pack(side="left")
-            self._small(tb, L["back"], lambda: self.set_view(180, 0)).pack(side="left")
-            self._small(tb, L["top"], lambda: self.set_view(0, 78)).pack(side="left")
+            # 四个视角按钮的 yaw 取值（2026-09-24 理顺，以前「正视 / 背视」是反的）：
+            #
+            #   yaw = 180 → 相机在 -Z = 看到**正面**（脸）   ← MMD 的正面就是 -Z
+            #   yaw =   0 → 相机在 +Z = 看到**背面**
+            #   yaw = 270 → 相机在 +X = 看到模型的**左侧**
+            #              （MMD 里 +X 是模型的左手侧；实测 Anastasya.pmx 左腕 X=+1.34）
+            #
+            # 「左视 / 右视」这里统一按**看到模型哪一侧**来命名（和工程制图的
+            # 左视图＝从左往右看、看到左面一致）。所以：
+            #     相机在 +X（看到模型左侧）→ 左视 → yaw 270
+            #     相机在 -X（看到模型右侧）→ 右视 → yaw 90
+            # 以前「左视」写的是 90，实际看到的是模型的**右侧**，也一并改正。
+            self._small(tb, L["front"], lambda: self.set_view(180, 0)).pack(side="left")
+            self._small(tb, L["left"], lambda: self.set_view(270, 0)).pack(side="left")
+            self._small(tb, L["back"], lambda: self.set_view(0, 0)).pack(side="left")
+            self._small(tb, L["top"], lambda: self.set_view(180, 78)).pack(side="left")
             self._small(tb, L["reset"], self.reset_view).pack(side="left")
             self.btn_spin = self._small(tb, L["spin"], self.toggle_spin)
             self.btn_spin.pack(side="left")
@@ -1398,7 +1554,7 @@ if tk is not None:
             self.redraw()
 
         def reset_view(self):
-            # 默认视角统一为背视图（yaw=180°）；实时预览只显示，不保存图片
+            # 默认视角统一为正面（yaw=180° = 相机在 -Z）；实时预览只显示，不保存图片
             self.yaw = DEFAULT_YAW
             self.pitch = DEFAULT_PITCH
             self.zoom = 1.0
@@ -2074,7 +2230,9 @@ def main(argv=None):
     ap.add_argument("model")
     ap.add_argument("-o", "--out", default=None)
     ap.add_argument("--size", type=int, default=560)
-    ap.add_argument("--yaw", type=float, default=0.0)
+    # 默认和 GUI 一致：yaw=180 = 相机在 -Z = 看到正面（MMD 的正面是 -Z）
+    ap.add_argument("--yaw", type=float, default=180.0,
+                    help="0=背面 / 180=正面 / 90=看到模型右侧 / 270=看到模型左侧")
     ap.add_argument("--pitch", type=float, default=0.0)
     ap.add_argument("--bones", action="store_true")
     a = ap.parse_args(argv)

@@ -15,7 +15,13 @@ import argparse
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 让 `python convert/vrm2pmx.py ...` 也能直接跑：脚本自己所在目录（convert/）和同级的
+# formats/ 都要进 sys.path。以前这里只加了 convert/，于是 `import pmxio` 之类会
+# ModuleNotFoundError —— 而 README 里给的命令行用法就是这么调的。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _p in (_HERE, os.path.join(os.path.dirname(_HERE), "formats")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 import pmxio
 import vrmio
 
@@ -629,7 +635,14 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
         "edge_color": (0.0, 0.0, 0.0, 1.0),
         "edge_size": 1.0 if enable_edge else 0.0,
                 "tex": tex_idx, "sph": -1, "sph_mode": 0,
-                "toon_flag": 1, "toon": 0, "memo": "",
+                # toon：**不使用**。
+                # ⚠ 方向极易搞反：flag=1 才是内建 toon（1 字节编号，引用 MMD 的
+                #   toon01.bmp..toon10.bmp，**编号 0 = toon01.bmp 而不是「不使用」**，
+                #   见 mmd_tools 的 `"toon%02d.bmp" % (shared + 1)`，且 MMD 的 Data
+                #   目录里根本没有 toon00.bmp）；flag=0 是本模型纹理表索引，
+                #   **-1 = なし**。所以「不使用 toon」= flag 0 + 索引 -1。
+                # 2026-09-24 修：以前写 flag=1/0，等于硬套一层 toon01.bmp。
+                "toon_flag": 0, "toon": -1, "memo": "",
                 "faces": (len(pmx_faces) - sum(m["faces"]
                                                for m in pmx_materials)),
             })

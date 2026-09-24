@@ -133,7 +133,10 @@ def read_pmx(path):
         sph = r.idx(mi_s)
         sph_mode = r.u8()
         toon_flag = r.u8()
-        toon = r.idx(mi_s) if toon_flag == 0 else r.u8()
+        # toon 宽度随 flag 变（别搞反）：flag=1 → 1 字节内建 toon 号
+        # （0..9 = MMD 的 Data/toon01.bmp..toon10.bmp，**0 号是 toon01.bmp**）；
+        # flag=0 → 纹理索引宽度（本模型贴图），**-1 = 不使用 toon**。
+        toon = r.idx(ti_s) if toon_flag == 0 else r.u8()
         memo = r.text()
         fcount = r.i32()
         mats.append({"name": name, "diffuse": diff, "flag": flag,
@@ -320,17 +323,32 @@ def render(model, size=560, bg=(250, 250, 250), show_bones=False):
     minz, maxz = min(zs), max(zs)
 
     SCALE = 0.52
-    view_axis = 2       # 2 = looking along +Z (front view)
-    sub = (int(maxx - minx) - int(minx), int(miny - miny) - int(miny))
 
     span = max(maxx - minx, maxy - miny) or 1.0
     k = size * SCALE * 2 / span
 
     def project(p):
-        # front view: screen x = -X (mirror, MMD looks at -Z), screen y = Y
-        sx = (p[0] - (minx + maxx) / 2) * k + size / 2
+        """正面视图（相机在 **-Z**，朝 +Z 看）。
+
+        MMD / PMX 的约定是 **正面 = -Z、左手 = +X、上 = +Y**（实测：用户本机
+        Anastasya.pmx 的「Eye」材质顶点 Z 重心 = -1.27，「Face」= -1.31；本工具
+        转出的 PSK 模型修正后同样是负值）。
+
+        相机在 -Z 时，屏幕基向量（右手系下 x_view = up × z_view，
+        z_view 指「从场景指向相机」= (0,0,-1)）：
+            屏幕上 = +Y     → sy 取 +Y
+            屏幕右 = -X     → sx 取 **-X**（所以这里要镜像 X）
+        第三个分量返回**朝相机的深度** -z，越大越近，配合下面的 z 缓冲用。
+
+        ⚠ 2026-09-24 修：以前这里的代码是
+              sx = ... + size/2 ;  sy = ... - ... ;  return sx, sy, p[2]
+        即「屏幕右 = +X、深度 = +z、大的赢」—— 相机实际落在 **+Z**，看到的是
+        **背面**（注释却写着 front view）；而且下面还按屏幕绕序把朝向相机的面
+        剔掉了，结果渲染出来是一堆内翻的碎片。现在两处一起修正。
+        """
+        sx = size / 2 - (p[0] - (minx + maxx) / 2) * k
         sy = size / 2 - (p[1] - (miny + maxy) / 2) * k
-        return sx, sy, p[2]
+        return sx, sy, -p[2]
 
     img = [[list(bg) for _ in range(size)] for _ in range(size)]
     zbuf = [[-1e30] * size for _ in range(size)]
@@ -345,10 +363,14 @@ def render(model, size=560, bg=(250, 250, 250), show_bones=False):
     for i in range(0, len(faces) - 2, 3):
         a, b, c = faces[i], faces[i + 1], faces[i + 2]
         pa, pb, pc = pts[a], pts[b], pts[c]
-        # backface test in screen space
+        # 不做背面剔除，只靠 z 缓冲 —— 和 gfx/preview.py 一个口径。
+        # 屏幕空间绕序在这里不可靠：投影把 X 镜像了一次，绕序会跟着翻，
+        # 加上 MMD 模型里大量单面/双面混用的裙摆头发，按绕序剔除很容易把
+        # 朝向相机的面剔掉、只剩壳体内部（2026-09-24 之前就是这个症状）。
+        # 只跳过退化三角形（三点共线，面积 0）。
         area = ((pb[0] - pa[0]) * (pc[1] - pa[1]) -
                 (pc[0] - pa[0]) * (pb[1] - pa[1]))
-        if area <= 0:
+        if area == 0.0:
             continue
         n = nrm[a]
         lam = abs(n[0] * L[0] + n[1] * L[1] + n[2] * L[2])

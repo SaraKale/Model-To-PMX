@@ -24,7 +24,13 @@ import math
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 让 `python convert/pmx2vrm.py ...` 也能直接跑：脚本自己所在目录（convert/）和同级的
+# formats/ 都要进 sys.path。以前这里只加了 convert/，于是 `import pmxio` 之类会
+# ModuleNotFoundError —— 而 README 里给的命令行用法就是这么调的。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _p in (_HERE, os.path.join(os.path.dirname(_HERE), "formats")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 import pmxio
 import vrmio
 

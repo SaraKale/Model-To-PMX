@@ -190,6 +190,16 @@ def read_pmx(path):
         mm["sph"] = r.idx(ti)
         mm["sph_mode"] = r.u8()
         mm["toon_flag"] = r.u8()
+        # toon 的宽度**取决于 flag**，两个方向别搞反（PMX 规范 + mmd_tools 的
+        # `is_shared_toon_texture` 都这么写）：
+        #   flag = 1 → 共享/内建 toon（MMD 的 Data/toon01.bmp..toon10.bmp），
+        #              字段是**1 字节编号**，**编号 0 对应 toon01.bmp**
+        #              （mmd_tools: `"toon%02d.bmp" % (shared_toon_texture + 1)`；
+        #                MMD 的 Data 目录里并没有 toon00.bmp）
+        #   flag = 0 → 本模型纹理表里的贴图，字段是**纹理索引宽度（ti）**，
+        #              **-1 = なし（不使用 toon）** ← 「不使用」只能这么写
+        # mmd_tools: `if is_shared: self.toon_texture = fs.readSignedByte()
+        #             else:      self.toon_texture = fs.readTextureIndex()`
         mm["toon"] = r.idx(ti) if mm["toon_flag"] == 0 else r.u8()
         mm["memo"] = r.text()
         mm["faces"] = r.i32()
@@ -538,6 +548,8 @@ def write_pmx(model, path):
         w.idx(mm["sph"], ti)
         w.u8(mm["sph_mode"])
         w.u8(mm["toon_flag"])
+        # 宽度随 flag 变（见读取侧注释）：flag=1 → 1 字节内建 toon 号；
+        # flag=0 → 纹理索引宽度。
         if mm["toon_flag"] == 0:
             w.idx(mm["toon"], ti)
         else:

@@ -1,24 +1,26 @@
 # -*- coding: utf-8 -*-
-"""模型转换器图形界面 - FBX / unitypackage / VRM / PMX 互转。
+"""模型转换器图形界面 - FBX / unitypackage / VRM / PMX / PSK 互转。
 
-把 .fbx、.unitypackage、.vrm、.pmx 拖进窗口即可自动转换，不需要 Blender、
-不需要 FBX SDK、不需要 Unity，全部是纯 Python。
+把 .fbx、.unitypackage、.vrm、.pmx、.uemodel、.psk、.pskx 拖进窗口即可自动转换，
+不需要 Blender、不需要 FBX SDK、不需要 Unity，全部是纯 Python。
 
 支持的方向：
     FBX / unitypackage → PMX
     VRM（0.x / 1.0）    → PMX
     PMX                → VRM（0.x / 1.0）
     PMX                → 仅校验 + 预览
+    uemodel → PMX
+    PMX → uemodel
+    PSK / PSKX（Unreal ActorX）→ PMX
 
 依赖：仅 Python 标准库（tkinter + ctypes）。
 拖放走 Windows 原生 WM_DROPFILES，不需要安装 tkinterdnd2 之类的第三方库。
-
 界面会按系统 DPI 自动缩放（高分屏上不再是小字）。右上角「界面缩放」可以
 手动指定倍率，选择会记进同目录的「config.json」。
 
 用法：
-    双击同目录的「PMX转换器.bat」
-    或  python PMX转换器.py
+    双击同目录的「启动PMX转换器.cmd」
+    或  python main.py
 """
 import json
 import os
@@ -43,8 +45,12 @@ for _sub in ("formats", "convert", "gfx"):
         sys.path.insert(0, _p)
 
 import fbx2pmx
+import pmx2uemodel
 import pmx_check
 import pmx2vrm
+import psk2pmx
+import uemodel2pmx
+import uemodelio
 import vrm2pmx
 import preview as model_preview
 from unitypackage_unpack import unpack as unpack_unitypackage
@@ -85,6 +91,11 @@ F_MONO = ("Consolas", 9)
 SETTINGS_PATH = os.path.join(BASE, "config.json")
 PREVIEW_BASE = 480
 
+# 拖放区的两种高度：空的时候要放得下「图标 + 主提示 + 格式行」（文案窄窗口会折行，
+# 所以留了余量），拖入文件之后压扁成一条窄带，把竖向空间让给文件列表。
+DZ_H_EMPTY = 150
+DZ_H_COMPACT = 74
+
 # ---- 界面缩放 --------------------------------------------------------------
 # 所有像素尺寸都过 px()，字体的点值则由 tk scaling 统一放大。
 # 高分屏（如 200% 缩放）下必须这样做，否则窗口按物理像素绘制、字号却按 96 DPI
@@ -97,31 +108,42 @@ def px(v):
 
 
 VRM_SPECS = ["1.0", "0.x"]
-MODEL_EXTS = (".fbx", ".unitypackage", ".vrm", ".pmx")
+MODEL_EXTS = (".fbx", ".unitypackage", ".vrm", ".pmx", ".uemodel",
+              ".psk", ".pskx")
 
 # 文件列表里「格式」列的显示名（与界面语言无关，都是格式自身的叫法）
-KIND_LABEL = {"fbx": "FBX", "unitypackage": "Unity", "vrm": "VRM", "pmx": "PMX"}
+KIND_LABEL = {"fbx": "FBX", "unitypackage": "Unity", "vrm": "VRM", "pmx": "PMX",
+              "uemodel": "UEFormat", "psk": "PSK"}
 
 # ----------------------------------------------------------------- i18n ----
 # 界面所有文案集中在此；切换语言后通过 _rebuild() 重建即可整窗本地化。
 LANG = {
     "zh_CN": {
-        "app_title": "模型转换器 · FBX / VRM / PMX",
-        "subtitle": "FBX / unitypackage / VRM / PMX 互转 · 纯 Python，不需要 Blender / FBX SDK / Unity",
+        "app_title": "模型转换器 · FBX / VRM / PMX / PSK",
+        "subtitle": "FBX / unitypackage / VRM / PMX / uemodel / PSK 互转 · 纯 Python，不需要 Blender / FBX SDK / Unity",
         "zoom_label": "界面缩放",
         "lang_label": "语言",
-        "drop_hint": "把模型文件拖到这里",
-        "drop_formats": "支持 .fbx / .unitypackage / .vrm / .pmx　·　也可以点击本区域选择文件",
+        # 拖放区两行文案：第一行是主提示（含点击说明），第二行只列格式。
+        # 原来把「也可以点击本区域选择文件」塞在格式行里，一行太长（窄窗口会被裁掉），
+        # 拆开后两行都短了，配合 _draw_dropzone 的自动折行，任何宽度都不会溢出。
+        "drop_hint": "把模型文件拖到这里，也可以点击本区域选择文件",
+        "drop_formats": "支持 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx",
         "task": "任务",
         "task_auto": "自动（按扩展名）",
         "task_fbx2pmx": "FBX / unitypackage → PMX",
         "task_vrm2pmx": "VRM → PMX",
         "task_pmx2vrm": "PMX → VRM",
+        "task_uemodel2pmx": "uemodel → PMX",
+        "task_pmx2uemodel": "PMX → uemodel",
+        "task_psk2pmx": "psk / pskx → PMX",
         "task_check": "PMX 仅校验 + 预览",
-        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM",
+        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM　·　.uemodel → PMX　·　.psk/.pskx → PMX",
         "hint_fbx2pmx": "FBX / unitypackage 转成 MMD 的 PMX",
         "hint_vrm2pmx": "VRM 0.x / 1.0 转成 MMD 的 PMX（贴图会导出到同目录）",
         "hint_pmx2vrm": "PMX 转成 VRM（自动识别 humanoid 骨骼，缺的会补占位骨）",
+        "hint_uemodel2pmx": "UEFormat(.uemodel) 转成 MMD 的 PMX（贴图按同目录的 MI_*.json 关联）",
+        "hint_pmx2uemodel": "PMX 转成 UEFormat(.uemodel)，可给 FortnitePorting / UE 插件用",
+        "hint_psk2pmx": "Unreal ActorX 的 .psk / .pskx 转成 MMD 的 PMX（骨骼转日文标准名、带表情）",
         "hint_check": "只读取 PMX 做结构校验和预览，不输出文件",
         "scale": "缩放",
         "scale_auto": "自动",
@@ -136,7 +158,21 @@ LANG = {
         "opt_edge": "VRM→PMX 时开启轮廓线",
         "opt_center": "FBX→PMX 自动居中并落地",
         "opt_fbxmorph": "FBX→PMX 导出形态键为表情",
-        "opt_alpha": "FBX→PMX 去除贴图透明通道",
+        "opt_alpha": "FBX→PMX 贴图透明通道",
+        "alpha_keep": "保留原样",
+        "alpha_auto": "自动判定（推荐）",
+        "alpha_strip": "全部去除",
+        "note_alpha": "（真透明贴图如蕾丝 / 丝袜必须保留；自动判不准时也保留，可手动覆盖）",
+        "opt_facing": "FBX→PMX 自动判定朝向（脚尖 / 脸部重心）",
+        "opt_face180": "强制额外转 180°（判错时手动覆盖）",
+        "log_facing_auto": "朝向自动判定：{reason} → {turn}",
+        "log_facing_off": "朝向自动判定已关闭，按手动设置：{turn}",
+        "log_turn_on": "额外转 180°（3D 视口正对相机）",
+        "log_turn_off": "不额外旋转",
+        "log_alpha_head": "贴图透明通道（{mode}）：去掉 {stripped} 张 / 保留 {kept} 张 / 本就不透明 {opaque} 张",
+        "log_alpha_strip_one": "  去掉 alpha {name}（{detail}）",
+        "log_alpha_keep_one": "  保留 alpha {name}（{detail}）",
+        "log_alpha_fail": "{n} 张去 alpha 失败，已回退用原图",
         "note_winding": "（仍有镂空可勾选双面；绕序默认自动判定）",
         "output": "输出",
         "opt_samedir": "与源文件同目录",
@@ -165,8 +201,8 @@ LANG = {
         "log_staged_tip": "确认下方选项后，点击「开始转换」按钮才会真正转换。",
         "log_staged_drop": "已就绪的文件与当前任务方向不匹配，已清空，请重新拖入。",
         "log_title": "转换日志",
-        "preview_title": "模型预览（背视图实时预览 · 可拖动旋转 / 滚轮缩放）",
-        "preview_stats": "拖入任意格式的模型即可实时背视图预览",
+        "preview_title": "模型预览（正面实时预览 · 可拖动旋转 / 滚轮缩放）",
+        "preview_stats": "拖入任意格式的模型即可实时预览（默认正面）",
         "pv_front": "正视",
         "pv_left": "左视",
         "pv_back": "背视",
@@ -175,18 +211,31 @@ LANG = {
         "pv_spin": "自转",
         "pv_bone": "骨骼",
         "pv_wire": "线框",
-        "pv_placeholder": "拖入模型后这里实时显示背视图预览\n（按住拖动可旋转，滚轮缩放）",
+        "pv_placeholder": "拖入模型后这里实时显示正面预览\n（按住拖动可旋转，滚轮缩放）",
         "pv_stats": "{name}\n顶点 {v} · 三角面 {t}\n骨骼 {b} · 材质 {m}{size}",
         "pv_stats_file": "\n文件 {size}",
         "tab_general": "通用",
         "tab_fbx": "FBX 选项",
         "tab_vrm": "VRM 选项",
+        "tab_ue": "UE 选项",
+        "opt_ue_fbx": "uemodel → PMX 时同时导出 FBX 文件",
+        "opt_ue_alpha": "导出 PMX 时去除贴图透明通道（UE 贴图 alpha 常是数据遮罩）",
+        "opt_ue_height": "PMX → uemodel 身高",
+        "unit_cm": "厘米",
+        "note_ue": "（.uemodel 是 UEFormat 公开交换格式：FortnitePorting / FModel 等从 UE 资源导出的中间文件；两个方向都会自动换轴，PMX→UE 默认按身高折算成厘米，也可用上面的缩放选「原始尺寸」保持 1:1）",
+        "tab_psk": "PSK 选项",
+        "opt_psk_jp": "骨骼转成 MMD 标准日文名（英文原名写在骨骼英文名里）",
+        "opt_psk_ik": "补 MMD 足 IK 骨（足ＩＫ / つま先ＩＫ）",
+        "opt_psk_morphs": "导出表情（MRPH 顶点位移 → PMX 表情）",
+        "opt_psk_fbx": "psk / pskx → PMX 时同时导出 FBX 文件",
+        "opt_psk_alpha": "导出 PMX 时去除贴图透明通道（UE 贴图 alpha 常是数据遮罩）",
+        "note_psk": "（.psk / .pskx 是 Unreal 的 ActorX 交换格式，FModel / UEViewer 从 UE 资源导出；会自动换轴成 MMD 的 Y-up、按身高归一到 20 单位，贴图按材质名在源文件同目录找同名图片）",
         "tab_output": "输出",
         "zoom_auto": "自动（跟随系统）",
         "msg_title": "提示",
-        "msg_pick": "请先把 .fbx / .unitypackage / .vrm / .pmx 文件拖进窗口，或点击拖放区域选择文件。",
+        "msg_pick": "请先把 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx 文件拖进窗口，或点击拖放区域选择文件。",
         "msg_unsupported": "不支持的文件",
-        "msg_unsupported_body": "无法识别：\n{files}\n\n支持 .fbx / .unitypackage / .vrm / .pmx",
+        "msg_unsupported_body": "无法识别：\n{files}\n\n支持 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx",
         "msg_mismatch": "所选文件与当前任务方向不匹配。",
         "msg_no_outdir": "还没有输出目录，先转换一次吧。",
         "msg_open_fail": "打开失败",
@@ -203,23 +252,29 @@ LANG = {
         "dlg_out": "选择输出目录",
     },
     "zh_TW": {
-        "app_title": "模型轉換器 · FBX / VRM / PMX",
-        "subtitle": "FBX / unitypackage / VRM / PMX 互轉 · 純 Python，不需要 Blender / FBX SDK / Unity",
+        "app_title": "模型轉換器 · FBX / VRM / PMX / PSK",
+        "subtitle": "FBX / unitypackage / VRM / PMX / uemodel / PSK 互轉 · 純 Python，不需要 Blender / FBX SDK / Unity",
         "zoom_label": "介面縮放",
         "lang_label": "語言",
-        "drop_hint": "把模型檔案拖到這裡",
-        "drop_formats": "支援 .fbx / .unitypackage / .vrm / .pmx　·　也可以點擊此區域選擇檔案",
+        "drop_hint": "把模型檔案拖到這裡，也可以點擊此區域選擇檔案",
+        "drop_formats": "支援 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx",
         "task": "任務",
         "task_auto": "自動（依副檔名）",
         "task_fbx2pmx": "FBX / unitypackage → PMX",
         "task_vrm2pmx": "VRM → PMX",
         "task_pmx2vrm": "PMX → VRM",
+        "task_uemodel2pmx": "uemodel → PMX",
+        "task_pmx2uemodel": "PMX → uemodel",
+        "task_psk2pmx": "psk / pskx → PMX",
         "task_check": "PMX 僅校驗 + 預覽",
-        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM",
+        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM　·　.uemodel → PMX　·　.psk/.pskx → PMX",
         "hint_fbx2pmx": "FBX / unitypackage 轉成 MMD 的 PMX",
         "hint_vrm2pmx": "VRM 0.x / 1.0 轉成 MMD 的 PMX（貼圖會匯出到同目錄）",
-        "hint_pmx2vrm": "PMX 轉成 VRM（自動辨識 humanoid 骨骼，缺少的會補佔位骨）",
-        "hint_check": "只讀取 PMX 做結構校驗與預覽，不輸出檔案",
+        "hint_pmx2vrm": "PMX 轉成 VRM（自動識別 humanoid 骨骼，缺的會補佔位骨）",
+        "hint_uemodel2pmx": "UEFormat(.uemodel) 轉成 MMD 的 PMX（貼圖依同目錄的 MI_*.json 關聯）",
+        "hint_pmx2uemodel": "PMX 轉成 UEFormat(.uemodel)，可給 FortnitePorting / UE 外掛用",
+        "hint_psk2pmx": "Unreal ActorX 的 .psk / .pskx 轉成 MMD 的 PMX（骨骼轉日文標準名、含表情）",
+        "hint_check": "只讀取 PMX 做結構校驗和預覽，不輸出檔案",
         "scale": "縮放",
         "scale_auto": "自動",
         "scale_raw": "原始尺寸",
@@ -233,7 +288,21 @@ LANG = {
         "opt_edge": "VRM→PMX 時開啟輪廓線",
         "opt_center": "FBX→PMX 自動置中並落地",
         "opt_fbxmorph": "FBX→PMX 匯出形態鍵為表情",
-        "opt_alpha": "FBX→PMX 去除貼圖透明通道",
+        "opt_alpha": "FBX→PMX 貼圖透明通道",
+        "alpha_keep": "保留原樣",
+        "alpha_auto": "自動判定（建議）",
+        "alpha_strip": "全部去除",
+        "note_alpha": "（真透明貼圖如蕾絲 / 絲襪必須保留；自動判不準時也保留，可手動覆蓋）",
+        "opt_facing": "FBX→PMX 自動判定朝向（腳尖 / 臉部重心）",
+        "opt_face180": "強制額外轉 180°（判錯時手動覆蓋）",
+        "log_facing_auto": "朝向自動判定：{reason} → {turn}",
+        "log_facing_off": "朝向自動判定已關閉，依手動設定：{turn}",
+        "log_turn_on": "額外轉 180°（3D 視口正對相機）",
+        "log_turn_off": "不額外旋轉",
+        "log_alpha_head": "貼圖透明通道（{mode}）：去掉 {stripped} 張 / 保留 {kept} 張 / 本就不透明 {opaque} 張",
+        "log_alpha_strip_one": "  去掉 alpha {name}（{detail}）",
+        "log_alpha_keep_one": "  保留 alpha {name}（{detail}）",
+        "log_alpha_fail": "{n} 張去 alpha 失敗，已回退用原圖",
         "note_winding": "（仍有鏤空可勾選雙面；繞序預設自動判定）",
         "output": "輸出",
         "opt_samedir": "與來源檔案同目錄",
@@ -262,8 +331,8 @@ LANG = {
         "log_staged_tip": "確認下方選項後，點擊「開始轉換」按鈕才會真正轉換。",
         "log_staged_drop": "已就緒的檔案與目前任務方向不符，已清空，請重新拖入。",
         "log_title": "轉換日誌",
-        "preview_title": "模型預覽（背視圖即時預覽 · 可拖曳旋轉 / 滾輪縮放）",
-        "preview_stats": "拖入任意格式的模型即可即時背視圖預覽",
+        "preview_title": "模型預覽（正面即時預覽 · 可拖曳旋轉 / 滾輪縮放）",
+        "preview_stats": "拖入任意格式的模型即可即時預覽（預設正面）",
         "pv_front": "正視",
         "pv_left": "左視",
         "pv_back": "背視",
@@ -272,18 +341,31 @@ LANG = {
         "pv_spin": "自轉",
         "pv_bone": "骨骼",
         "pv_wire": "線框",
-        "pv_placeholder": "拖入模型後這裡即時顯示背視圖預覽\n（按住拖曳可旋轉，滾輪縮放）",
+        "pv_placeholder": "拖入模型後這裡即時顯示正面預覽\n（按住拖曳可旋轉，滾輪縮放）",
         "pv_stats": "{name}\n頂點 {v} · 三角面 {t}\n骨骼 {b} · 材質 {m}{size}",
         "pv_stats_file": "\n檔案 {size}",
         "tab_general": "通用",
         "tab_fbx": "FBX 選項",
         "tab_vrm": "VRM 選項",
+        "tab_ue": "UE 選項",
+        "opt_ue_fbx": "uemodel → PMX 時同時匯出 FBX 檔案",
+        "opt_ue_alpha": "匯出 PMX 時去除貼圖透明通道（UE 貼圖 alpha 常是資料遮罩）",
+        "opt_ue_height": "PMX → uemodel 身高",
+        "unit_cm": "公分",
+        "note_ue": "（.uemodel 是 UEFormat 公開交換格式：FortnitePorting / FModel 等從 UE 資源匯出的中介檔；兩個方向都會自動換軸，PMX→UE 預設按身高折算成公分，也可用上面的縮放選「原始尺寸」保持 1:1）",
+        "tab_psk": "PSK 選項",
+        "opt_psk_jp": "骨骼轉成 MMD 標準日文名（英文原名寫在骨骼英文名裡）",
+        "opt_psk_ik": "補 MMD 足 IK 骨（足ＩＫ / つま先ＩＫ）",
+        "opt_psk_morphs": "匯出表情（MRPH 頂點位移 → PMX 表情）",
+        "opt_psk_fbx": "psk / pskx → PMX 時同時匯出 FBX 檔案",
+        "opt_psk_alpha": "匯出 PMX 時去除貼圖透明通道（UE 貼圖 alpha 常是資料遮罩）",
+        "note_psk": "（.psk / .pskx 是 Unreal 的 ActorX 交換格式，FModel / UEViewer 從 UE 資源匯出；會自動換軸成 MMD 的 Y-up、按身高歸一到 20 單位，貼圖依材質名在來源檔同目錄找同名圖片）",
         "tab_output": "輸出",
         "zoom_auto": "自動（跟隨系統）",
         "msg_title": "提示",
-        "msg_pick": "請先把 .fbx / .unitypackage / .vrm / .pmx 檔案拖進視窗，或點擊拖放區域選擇檔案。",
+        "msg_pick": "請先把 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx 檔案拖進視窗，或點擊拖放區域選擇檔案。",
         "msg_unsupported": "不支援的檔案",
-        "msg_unsupported_body": "無法辨識：\n{files}\n\n支援 .fbx / .unitypackage / .vrm / .pmx",
+        "msg_unsupported_body": "無法辨識：\n{files}\n\n支援 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx",
         "msg_mismatch": "所選檔案與目前任務方向不符。",
         "msg_no_outdir": "還沒有輸出目錄，先轉換一次吧。",
         "msg_open_fail": "開啟失敗",
@@ -300,22 +382,28 @@ LANG = {
         "dlg_out": "選擇輸出目錄",
     },
     "en": {
-        "app_title": "Model Converter · FBX / VRM / PMX",
-        "subtitle": "FBX / unitypackage / VRM / PMX conversion · Pure Python, no Blender / FBX SDK / Unity",
+        "app_title": "Model Converter · FBX / VRM / PMX / PSK",
+        "subtitle": "FBX / unitypackage / VRM / PMX / uemodel / PSK conversion · Pure Python, no Blender / FBX SDK / Unity",
         "zoom_label": "UI scale",
         "lang_label": "Language",
-        "drop_hint": "Drop model files here",
-        "drop_formats": "Supports .fbx / .unitypackage / .vrm / .pmx　·　or click this area to pick files",
+        "drop_hint": "Drop model files here, or click to pick files",
+        "drop_formats": "Supports .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx",
         "task": "Task",
         "task_auto": "Auto (by extension)",
         "task_fbx2pmx": "FBX / unitypackage → PMX",
         "task_vrm2pmx": "VRM → PMX",
         "task_pmx2vrm": "PMX → VRM",
+        "task_uemodel2pmx": "uemodel → PMX",
+        "task_pmx2uemodel": "PMX → uemodel",
+        "task_psk2pmx": "psk / pskx → PMX",
         "task_check": "PMX check + preview only",
-        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM",
+        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM　·　.uemodel → PMX　·　.psk/.pskx → PMX",
         "hint_fbx2pmx": "Convert FBX / unitypackage into MMD PMX",
         "hint_vrm2pmx": "Convert VRM 0.x / 1.0 into MMD PMX (textures exported alongside)",
         "hint_pmx2vrm": "Convert PMX into VRM (auto-detect humanoid bones, fill missing with placeholders)",
+        "hint_uemodel2pmx": "Convert UEFormat (.uemodel) into MMD PMX (textures linked via the sibling MI_*.json)",
+        "hint_pmx2uemodel": "Convert PMX into UEFormat (.uemodel) for FortnitePorting / UE plugins",
+        "hint_psk2pmx": "Convert Unreal ActorX .psk / .pskx into MMD PMX (standard JP bone names, morphs included)",
         "hint_check": "Only read PMX for structure check and preview, no output file",
         "scale": "Scale",
         "scale_auto": "Auto",
@@ -330,7 +418,21 @@ LANG = {
         "opt_edge": "Enable outline (VRM→PMX)",
         "opt_center": "FBX→PMX auto-center and drop to ground",
         "opt_fbxmorph": "FBX→PMX export shape keys as morphs",
-        "opt_alpha": "FBX→PMX strip texture alpha channel",
+        "opt_alpha": "FBX→PMX texture alpha channel",
+        "alpha_keep": "Keep as-is",
+        "alpha_auto": "Decide per texture (recommended)",
+        "alpha_strip": "Strip all",
+        "note_alpha": "(Real transparency such as lace / stockings must be kept; unclear cases are kept too and can be overridden)",
+        "opt_facing": "FBX→PMX auto-detect facing (toe / face centroid)",
+        "opt_face180": "Force an extra 180° turn (manual override)",
+        "log_facing_auto": "Facing auto-detect: {reason} -> {turn}",
+        "log_facing_off": "Facing auto-detect disabled, using manual setting: {turn}",
+        "log_turn_on": "extra 180° turn applied (faces the camera)",
+        "log_turn_off": "no extra rotation",
+        "log_alpha_head": "Texture alpha ({mode}): stripped {stripped} / kept {kept} / already opaque {opaque}",
+        "log_alpha_strip_one": "  strip alpha {name} ({detail})",
+        "log_alpha_keep_one": "  keep alpha {name} ({detail})",
+        "log_alpha_fail": "{n} texture(s) could not be stripped, original reused",
         "note_winding": "(If still holed, check double-sided; winding auto-detected)",
         "output": "Output",
         "opt_samedir": "Same folder as source",
@@ -359,8 +461,8 @@ LANG = {
         "log_staged_tip": "Review the options below, then click \"Start conversion\" to run.",
         "log_staged_drop": "Loaded files no longer match the current task direction; cleared. Please drop them again.",
         "log_title": "Conversion log",
-        "preview_title": "Model preview (live back view · drag to rotate / wheel to zoom)",
-        "preview_stats": "Drop any model format to see a live back view preview",
+        "preview_title": "Model preview (live front view · drag to rotate / wheel to zoom)",
+        "preview_stats": "Drop any model format to see a live preview (front view by default)",
         "pv_front": "Front",
         "pv_left": "Left",
         "pv_back": "Back",
@@ -369,18 +471,31 @@ LANG = {
         "pv_spin": "Spin",
         "pv_bone": "Bones",
         "pv_wire": "Wire",
-        "pv_placeholder": "Drop a model here to see the live back view\n(drag to rotate · wheel to zoom)",
+        "pv_placeholder": "Drop a model here to see the live front view\n(drag to rotate · wheel to zoom)",
         "pv_stats": "{name}\nVerts {v} · Tris {t}\nBones {b} · Materials {m}{size}",
         "pv_stats_file": "\nFile {size}",
         "tab_general": "General",
         "tab_fbx": "FBX",
         "tab_vrm": "VRM",
+        "tab_ue": "UE",
+        "opt_ue_fbx": "Also export an FBX file when converting uemodel → PMX",
+        "opt_ue_alpha": "Strip texture alpha when exporting PMX (UE alpha is often a data mask)",
+        "opt_ue_height": "PMX → uemodel height",
+        "unit_cm": "cm",
+        "note_ue": "(.uemodel is the public UEFormat exchange format used by FortnitePorting / FModel; both directions re-map axes automatically and PMX→UE converts the height to centimetres by default — pick Raw size above to keep it 1:1)",
+        "tab_psk": "PSK",
+        "opt_psk_jp": "Rename bones to MMD standard Japanese names (original English kept as the English name)",
+        "opt_psk_ik": "Add MMD leg IK bones (足ＩＫ / つま先ＩＫ)",
+        "opt_psk_morphs": "Export morphs (MRPH vertex deltas → PMX morphs)",
+        "opt_psk_fbx": "Also export an FBX file when converting psk / pskx → PMX",
+        "opt_psk_alpha": "Strip texture alpha when exporting PMX (UE alpha is often a data mask)",
+        "note_psk": "(.psk / .pskx is Unreal's ActorX exchange format exported by FModel / UEViewer. Axes are re-mapped to MMD's Y-up, the height is normalised to 20 units, and textures are matched by material name next to the source file)",
         "tab_output": "Output",
         "zoom_auto": "Auto (follow system)",
         "msg_title": "Note",
-        "msg_pick": "Please drop .fbx / .unitypackage / .vrm / .pmx files into the window, or click the drop area to pick files.",
+        "msg_pick": "Please drop .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx files into the window, or click the drop area to pick files.",
         "msg_unsupported": "Unsupported file",
-        "msg_unsupported_body": "Unrecognized:\n{files}\n\nSupports .fbx / .unitypackage / .vrm / .pmx",
+        "msg_unsupported_body": "Unrecognized:\n{files}\n\nSupports .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx",
         "msg_mismatch": "Selected files do not match the current task direction.",
         "msg_no_outdir": "No output folder yet — convert something first.",
         "msg_open_fail": "Failed to open",
@@ -397,22 +512,28 @@ LANG = {
         "dlg_out": "Select output folder",
     },
     "ja": {
-        "app_title": "モデル変換 · FBX / VRM / PMX",
-        "subtitle": "FBX / unitypackage / VRM / PMX 相互変換 · 純 Python、Blender / FBX SDK / Unity 不要",
+        "app_title": "モデル変換 · FBX / VRM / PMX / PSK",
+        "subtitle": "FBX / unitypackage / VRM / PMX / uemodel / PSK 相互変換 · 純 Python、Blender / FBX SDK / Unity 不要",
         "zoom_label": "表示倍率",
         "lang_label": "言語",
-        "drop_hint": "ここにモデルファイルをドロップ",
-        "drop_formats": "対応 .fbx / .unitypackage / .vrm / .pmx　·　またはここをクリックして選択",
+        "drop_hint": "ここにモデルをドロップ（クリックでも可）",
+        "drop_formats": "対応 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx",
         "task": "タスク",
         "task_auto": "自動（拡張子で判定）",
         "task_fbx2pmx": "FBX / unitypackage → PMX",
         "task_vrm2pmx": "VRM → PMX",
         "task_pmx2vrm": "PMX → VRM",
+        "task_uemodel2pmx": "uemodel → PMX",
+        "task_pmx2uemodel": "PMX → uemodel",
+        "task_psk2pmx": "psk / pskx → PMX",
         "task_check": "PMX 検証＋プレビューのみ",
-        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM",
+        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM　·　.uemodel → PMX　·　.psk/.pskx → PMX",
         "hint_fbx2pmx": "FBX / unitypackage を MMD の PMX に変換",
         "hint_vrm2pmx": "VRM 0.x / 1.0 を MMD の PMX に変換（テクスチャは同フォルダへ）",
         "hint_pmx2vrm": "PMX を VRM に変換（humanoid ボーン自動判定、欠損はダミー骨で補完）",
+        "hint_uemodel2pmx": "UEFormat(.uemodel) を MMD の PMX に変換（テクスチャは同フォルダの MI_*.json から関連付け）",
+        "hint_pmx2uemodel": "PMX を UEFormat(.uemodel) に変換（FortnitePorting / UE プラグイン向け）",
+        "hint_psk2pmx": "Unreal ActorX の .psk / .pskx を MMD の PMX に変換（ボーンは日本語標準名・表情付き）",
         "hint_check": "PMX を読むだけで構造検証とプレビュー、出力はしません",
         "scale": "倍率",
         "scale_auto": "自動",
@@ -427,7 +548,21 @@ LANG = {
         "opt_edge": "輪郭線を有効化（VRM→PMX）",
         "opt_center": "FBX→PMX 自動中央配置＆接地",
         "opt_fbxmorph": "FBX→PMX シェイプキーをモーフに",
-        "opt_alpha": "FBX→PMX テクスチャのアルファを除去",
+        "opt_alpha": "FBX→PMX テクスチャのアルファ",
+        "alpha_keep": "そのまま残す",
+        "alpha_auto": "自動判定（推奨）",
+        "alpha_strip": "すべて除去",
+        "note_alpha": "（レースやストッキングのような本来の透明は残す必要があります。判定できない場合も残し、手動で上書きできます）",
+        "opt_facing": "FBX→PMX 向きを自動判定（つま先／顔の重心）",
+        "opt_face180": "強制で 180° 追加回転（誤判定時の手動上書き）",
+        "log_facing_auto": "向きの自動判定：{reason} → {turn}",
+        "log_facing_off": "向きの自動判定はオフ、手動設定に従います：{turn}",
+        "log_turn_on": "180° 追加回転しました（カメラ側を向く）",
+        "log_turn_off": "追加回転なし",
+        "log_alpha_head": "テクスチャのアルファ（{mode}）：除去 {stripped} / 保持 {kept} / 元から不透明 {opaque}",
+        "log_alpha_strip_one": "  アルファ除去 {name}（{detail}）",
+        "log_alpha_keep_one": "  アルファ保持 {name}（{detail}）",
+        "log_alpha_fail": "{n} 枚のアルファ除去に失敗し、元画像を使用しました",
         "note_winding": "（それでも抜けがある場合は両面化をチェック。巻き順は自動判定）",
         "output": "出力",
         "opt_samedir": "元ファイルと同じフォルダ",
@@ -456,8 +591,8 @@ LANG = {
         "log_staged_tip": "下のオプションを確認し、「変換開始」ボタンで変換を実行します。",
         "log_staged_drop": "読み込み済みのファイルが現在のタスク方向と一致しないため、クリアしました。もう一度ドロップしてください。",
         "log_title": "変換ログ",
-        "preview_title": "モデルプレビュー（背面部 リアルタイム・ドラッグで回転／ホイールで拡大）",
-        "preview_stats": "任意の形式のモデルをドロップすると背面部が表示されます",
+        "preview_title": "モデルプレビュー（正面 リアルタイム・ドラッグで回転／ホイールで拡大）",
+        "preview_stats": "任意の形式のモデルをドロップすると即時プレビュー（既定は正面）",
         "pv_front": "正面",
         "pv_left": "左面",
         "pv_back": "背面",
@@ -466,18 +601,31 @@ LANG = {
         "pv_spin": "回転",
         "pv_bone": "ボーン",
         "pv_wire": "ワイヤー",
-        "pv_placeholder": "モデルをドロップすると背面部がここに表示されます\n（ドラッグで回転／ホイールで拡大）",
+        "pv_placeholder": "モデルをドロップすると正面がここに表示されます\n（ドラッグで回転／ホイールで拡大）",
         "pv_stats": "{name}\n頂点 {v} · 三角面 {t}\nボーン {b} · マテリアル {m}{size}",
         "pv_stats_file": "\nファイル {size}",
         "tab_general": "共通",
         "tab_fbx": "FBX",
         "tab_vrm": "VRM",
+        "tab_ue": "UE",
+        "opt_ue_fbx": "uemodel → PMX のときに FBX も同時出力",
+        "opt_ue_alpha": "PMX 出力時にテクスチャのアルファを外す（UE の alpha はデータマスクのことが多い）",
+        "opt_ue_height": "PMX → uemodel の身長",
+        "unit_cm": "cm",
+        "note_ue": "（.uemodel は UEFormat の公開交換形式で、FortnitePorting / FModel などが UE アセットから書き出します。どちらの方向も軸は自動変換、PMX→UE は既定で身長を cm に換算します。1:1 にしたい場合は上の倍率で「元のサイズ」を選んでください）",
+        "tab_psk": "PSK",
+        "opt_psk_jp": "ボーンを MMD 標準の日本語名にする（元の英名は英語名欄に残します）",
+        "opt_psk_ik": "MMD の足 IK ボーンを追加（足ＩＫ / つま先ＩＫ）",
+        "opt_psk_morphs": "表情を書き出す（MRPH の頂点移動 → PMX 表情）",
+        "opt_psk_fbx": "psk / pskx → PMX のときに FBX も同時出力",
+        "opt_psk_alpha": "PMX 出力時にテクスチャのアルファを外す（UE の alpha はデータマスクのことが多い）",
+        "note_psk": "（.psk / .pskx は Unreal の ActorX 交換形式で、FModel / UEViewer が UE アセットから書き出します。MMD の Y-up に自動で軸変換し、身長は 20 単位に正規化、テクスチャはマテリアル名と同名の画像をソースと同じフォルダから探します）",
         "tab_output": "出力",
         "zoom_auto": "自動（システムに合わせる）",
         "msg_title": "注意",
-        "msg_pick": ".fbx / .unitypackage / .vrm / .pmx ファイルをウィンドウへドロップするか、ドロップ領域をクリックして選択してください。",
+        "msg_pick": ".fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx ファイルをウィンドウへドロップするか、ドロップ領域をクリックして選択してください。",
         "msg_unsupported": "非対応のファイル",
-        "msg_unsupported_body": "認識できません：\n{files}\n\n対応：.fbx / .unitypackage / .vrm / .pmx",
+        "msg_unsupported_body": "認識できません：\n{files}\n\n対応：.fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx",
         "msg_mismatch": "選択したファイルは現在のタスク方向と一致しません。",
         "msg_no_outdir": "まだ出力フォルダがありません。一度変換してください。",
         "msg_open_fail": "開けませんでした",
@@ -525,6 +673,9 @@ def refresh_choices():
                     (t("task_fbx2pmx"), "fbx2pmx"),
                     (t("task_vrm2pmx"), "vrm2pmx"),
                     (t("task_pmx2vrm"), "pmx2vrm"),
+                    (t("task_uemodel2pmx"), "uemodel2pmx"),
+                    (t("task_pmx2uemodel"), "pmx2uemodel"),
+                    (t("task_psk2pmx"), "psk2pmx"),
                     (t("task_check"), "check")]
     TASK_BY_LABEL = dict(TASK_CHOICES)
     TASK_LABELS = [lbl for lbl, _ in TASK_CHOICES]
@@ -699,11 +850,16 @@ def classify(path):
         return "vrm"
     if ext == ".pmx":
         return "pmx"
+    if ext == ".uemodel":
+        return "uemodel"
+    if ext in (".psk", ".pskx"):
+        return "psk"
     return "unknown"
 
 
 AUTO_TASK = {"fbx": "fbx2pmx", "unitypackage": "fbx2pmx",
-             "vrm": "vrm2pmx", "pmx": "pmx2vrm"}
+             "vrm": "vrm2pmx", "pmx": "pmx2vrm",
+             "uemodel": "uemodel2pmx", "psk": "psk2pmx"}
 
 
 def find_fbx(root):
@@ -786,6 +942,22 @@ def zoom_label(factor):
         if f is not None and abs(f - factor) < 1e-6:
             return lbl
     return "%.0f%%" % (factor * 100)
+
+
+# ---- 贴图 alpha 三档：值用内部代号（keep/auto/strip），界面显示本地化文案 ----
+def alpha_label(code):
+    return t("alpha_" + code)
+
+
+def alpha_labels():
+    return [alpha_label(c) for c in fbx2pmx.ALPHA_MODES]
+
+
+def alpha_code_of(label, default="auto"):
+    for c in fbx2pmx.ALPHA_MODES:
+        if alpha_label(c) == label:
+            return c
+    return default
 
 
 def apply_scaling(root, factor):
@@ -936,9 +1108,21 @@ class ConverterApp:
         self.var_morphs = tk.BooleanVar(value=True)
         self.var_center = tk.BooleanVar(value=True)
         self.var_fbx_morphs = tk.BooleanVar(value=True)
-        self.var_remove_alpha = tk.BooleanVar(value=False)
+        self.var_alpha_mode = tk.StringVar(value=alpha_label("auto"))
+        self.var_auto_facing = tk.BooleanVar(value=True)
+        self.var_face180 = tk.BooleanVar(value=False)
         self.var_two_sided = tk.BooleanVar(value=False)
         self.var_edge = tk.BooleanVar(value=False)
+        # UE（UEFormat / .uemodel）
+        self.var_ue_fbx = tk.BooleanVar(value=False)
+        self.var_ue_alpha = tk.BooleanVar(value=True)
+        self.var_ue_height = tk.StringVar(value="180")
+        # PSK / PSKX（Unreal ActorX）
+        self.var_psk_jp = tk.BooleanVar(value=True)
+        self.var_psk_ik = tk.BooleanVar(value=True)
+        self.var_psk_morphs = tk.BooleanVar(value=True)
+        self.var_psk_fbx = tk.BooleanVar(value=False)
+        self.var_psk_alpha = tk.BooleanVar(value=True)
         self._task_code = "auto"             # 任务方向内部代号（与语言无关）
         self.var_lang = tk.StringVar(value="zh_CN")
         self.zoom = None                      # None = 跟随系统 DPI
@@ -1056,7 +1240,7 @@ class ConverterApp:
         self.txt.configure(state="disabled")
 
         act = tk.Frame(top, bg=BG)
-        act.pack(side="bottom", fill="x", pady=(px(12), 0))
+        act.pack(side="bottom", fill="x", pady=(px(8), 0))
         self.btn_go = self._btn(act, t("start"), self.start_from_ui,
                                 kind="primary")
         self.btn_go.pack(side="left")
@@ -1068,10 +1252,11 @@ class ConverterApp:
         self.btn_clear.pack(side="left", padx=(px(8), 0))
 
         # ---- drop zone
-        self._dz_h = px(126)          # 拖放区当前高度（有文件时会压扁）
-        self.dz = tk.Canvas(top, height=px(126), bg=CARD, highlightthickness=1,
+        self._dz_h = px(DZ_H_EMPTY)   # 拖放区当前高度（有文件时会压扁）
+        self.dz = tk.Canvas(top, height=px(DZ_H_EMPTY), bg=CARD,
+                            highlightthickness=1,
                             highlightbackground=BORDER, cursor="hand2")
-        self.dz.pack(fill="x", pady=(px(12), 0))
+        self.dz.pack(fill="x", pady=(px(8), 0))
         self.dz.bind("<Configure>", lambda e: self._draw_dropzone())
         self.dz.bind("<Enter>", lambda e: self._hover(True))
         self.dz.bind("<Leave>", lambda e: self._hover(False))
@@ -1117,10 +1302,21 @@ class ConverterApp:
         self.tv.bind("<Delete>", lambda e: self.remove_selected_files())
 
         # ---- options（Notebook 分页：为将来加功能预留扩展空间）
+        # 每个页签的内容都在可滚动容器里（见 _tab），所以这里用 expand=True 让
+        # Notebook 吃掉剩余竖向空间：窗口大时页面铺满，窗口小时页面自己出滚动条，
+        # 而不是被下面的按钮行挤掉。
+        self._scroll_canvases = []
         nb = ttk.Notebook(top)
-        nb.pack(fill="x", pady=(px(10), 0))
+        nb.pack(fill="both", expand=True, pady=(px(8), 0))
         self.nb = nb
         self._style_notebook(nb)
+        # 页签的滚轮滚动（挂在窗口上，不抢预览控件的滚轮缩放）。
+        # _rebuild() 会再跑一遍 _build()，绑过一次就不要再绑，否则一次滚轮滚两格。
+        if not getattr(self, "_wheel_bound", False):
+            self._wheel_bound = True
+            self.root.bind("<MouseWheel>", self._on_wheel, add="+")
+            self.root.bind("<Button-4>", self._on_wheel, add="+")
+            self.root.bind("<Button-5>", self._on_wheel, add="+")
 
         # 通用
         self.var_task.set(TASK_BY_LABEL.get(self._task_code, TASK_LABELS[0]))
@@ -1171,7 +1367,21 @@ class ConverterApp:
         tab_f = self._tab(nb, t("tab_fbx"))
         self._bigcheck(tab_f, t("opt_center"), self.var_center)
         self._bigcheck(tab_f, t("opt_fbxmorph"), self.var_fbx_morphs)
-        self._bigcheck(tab_f, t("opt_alpha"), self.var_remove_alpha)
+        self._bigcheck(tab_f, t("opt_facing"), self.var_auto_facing,
+                       command=self._rerender)
+        self._bigcheck(tab_f, t("opt_face180"), self.var_face180,
+                       command=self._rerender)
+        row_a = tk.Frame(tab_f, bg=CARD)
+        row_a.pack(anchor="w", padx=px(14), pady=(px(4), 0))
+        tk.Label(row_a, text=t("opt_alpha"), font=F_BODY, bg=CARD,
+                 fg=TXT).pack(side="left", padx=(0, px(8)))
+        self.om_alpha = tk.OptionMenu(row_a, self.var_alpha_mode,
+                                      *alpha_labels())
+        self._style_om(self.om_alpha, width=18)
+        self.om_alpha.pack(side="left")
+        tk.Label(tab_f, text=t("note_alpha"), font=F_SUB, bg=CARD,
+                 fg=MUTED).pack(anchor="w", padx=px(14),
+                                pady=(px(2), px(2)))
         tk.Label(tab_f, text=t("note_winding"), font=F_SUB, bg=CARD,
                  fg=MUTED).pack(anchor="w", padx=px(14),
                                 pady=(px(2), px(12)))
@@ -1187,6 +1397,44 @@ class ConverterApp:
         self.om_spec.pack(side="left", padx=(px(8), 0))
         self._bigcheck(tab_v, t("opt_morphs"), self.var_morphs)
         self._bigcheck(tab_v, t("opt_edge"), self.var_edge)
+
+        # UE 选项（UEFormat / .uemodel）
+        tab_u = self._tab(nb, t("tab_ue"))
+        self._bigcheck(tab_u, t("opt_ue_fbx"), self.var_ue_fbx)
+        self._bigcheck(tab_u, t("opt_ue_alpha"), self.var_ue_alpha)
+        rowu = tk.Frame(tab_u, bg=CARD)
+        rowu.pack(fill="x", padx=px(14), pady=(px(4), 0))
+        tk.Label(rowu, text=t("opt_ue_height"), font=F_BODY, bg=CARD,
+                 fg=TXT).pack(side="left")
+        self.ent_ue_h = tk.Entry(rowu, textvariable=self.var_ue_height,
+                                 width=7, font=F_BODY, bg=CARD, fg=TXT,
+                                 relief="solid", bd=1, justify="center",
+                                 highlightthickness=0, insertbackground=TXT)
+        self.ent_ue_h.pack(side="left", padx=(px(8), 0))
+        tk.Label(rowu, text=t("unit_cm"), font=F_SUB, bg=CARD,
+                 fg=MUTED).pack(side="left", padx=(px(4), 0))
+        self.lbl_ue_note = tk.Label(tab_u, text=t("note_ue"), font=F_SUB,
+                                    bg=CARD, fg=MUTED, justify="left",
+                                    anchor="w")
+        self.lbl_ue_note.pack(fill="x", padx=px(14), pady=(px(6), px(12)))
+        tab_u.bind("<Configure>",
+                   lambda e: self.lbl_ue_note.configure(
+                       wraplength=max(px(150), e.width - px(28))))
+
+        # PSK 选项（Unreal ActorX / .psk / .pskx）
+        tab_p = self._tab(nb, t("tab_psk"))
+        self._bigcheck(tab_p, t("opt_psk_jp"), self.var_psk_jp)
+        self._bigcheck(tab_p, t("opt_psk_ik"), self.var_psk_ik)
+        self._bigcheck(tab_p, t("opt_psk_morphs"), self.var_psk_morphs)
+        self._bigcheck(tab_p, t("opt_psk_fbx"), self.var_psk_fbx)
+        self._bigcheck(tab_p, t("opt_psk_alpha"), self.var_psk_alpha)
+        self.lbl_psk_note = tk.Label(tab_p, text=t("note_psk"), font=F_SUB,
+                                     bg=CARD, fg=MUTED, justify="left",
+                                     anchor="w")
+        self.lbl_psk_note.pack(fill="x", padx=px(14), pady=(px(6), px(12)))
+        tab_p.bind("<Configure>",
+                   lambda e: self.lbl_psk_note.configure(
+                       wraplength=max(px(150), e.width - px(28))))
 
         # 输出
         tab_o = self._tab(nb, t("tab_output"))
@@ -1399,10 +1647,65 @@ class ConverterApp:
             pass
 
     def _tab(self, nb, title):
-        f = tk.Frame(nb, bg=CARD, highlightthickness=1,
-                     highlightbackground=BORDER)
-        nb.add(f, text=title)
-        return f
+        """建一个页签，**内容放在可滚动容器里**。
+
+        为什么必须能滚：`top` 那一栏的排版顺序是「按钮行(side=bottom) → 拖放区 →
+        文件列表 → Notebook」，Notebook 是最后一个，竖向空间不够时 pack 会从它身上
+        扣，表现就是「窗口调小以后页签下面的选项看不见了」（用户 2026-09-24 反馈）。
+        现在页签内容装不下时右侧自动出现滚动条，鼠标滚轮也能滚，不会再被裁掉。
+
+        返回的是内容容器（往它里面 pack 控件即可），调用方不用关心滚动的事。
+        """
+        outer = tk.Frame(nb, bg=CARD, highlightthickness=1,
+                         highlightbackground=BORDER)
+        nb.add(outer, text=title)
+
+        # width 给个小值：真正的宽度由 fill="both"+expand 撑开，这里只是别让
+        # Canvas 的默认请求宽度把左栏的最小宽度顶起来。
+        cv = tk.Canvas(outer, bg=CARD, highlightthickness=0, bd=0,
+                       width=px(120), height=px(150),
+                       yscrollincrement=px(20))
+        sb = ttk.Scrollbar(outer, orient="vertical", command=cv.yview)
+        cv.configure(yscrollcommand=sb.set)
+        cv.pack(side="left", fill="both", expand=True)
+
+        inner = tk.Frame(cv, bg=CARD)
+        win = cv.create_window(0, 0, window=inner, anchor="nw")
+
+        def sync(_e=None):
+            cv.configure(scrollregion=cv.bbox("all"))
+            need = inner.winfo_reqheight() > cv.winfo_height() + px(2)
+            if need and not sb.winfo_ismapped():
+                sb.pack(side="right", fill="y")
+            elif not need and sb.winfo_ismapped():
+                sb.pack_forget()
+
+        inner.bind("<Configure>", lambda e: sync())
+        cv.bind("<Configure>",
+                lambda e: (cv.itemconfigure(win, width=e.width), sync()))
+        cv._scrollable = True
+        self._scroll_canvases.append(cv)
+        return inner
+
+    def _on_wheel(self, e):
+        """滚轮：指针落在哪个可滚动页签上就滚哪个（页签里的子控件也算）。
+
+        不用 bind_all —— 预览控件自己绑了 <MouseWheel>（滚轮缩放），bind_all 会把
+        它顶掉。这里挂在外层窗口上，事件先经过控件自己的绑定，到不了这儿的说明
+        指针不在预览上；再从 e.widget 沿 master 往上找页签的画布。
+        """
+        w = e.widget
+        while w is not None:
+            if getattr(w, "_scrollable", False):
+                first, last = w.yview()
+                if first > 0.0 or last < 1.0:
+                    delta = getattr(e, "delta", 0)
+                    if delta == 0:
+                        delta = 120 if getattr(e, "num", 0) == 4 else -120
+                    w.yview_scroll(-1 if delta > 0 else 1, "units")
+                    return "break"
+                return
+            w = getattr(w, "master", None)
 
     def _bigcheck(self, parent, text, var, command=None, pady=None):
         bc = BigCheck(parent, text=text, variable=var, command=command,
@@ -1418,7 +1721,7 @@ class ConverterApp:
         w = max(c.winfo_width(), px(300))
         # 高度用自己记的意图值（_dz_h）：canvas 高度固定，configure(height=)
         # 之后 winfo_height() 可能还是旧值，读它会画到框外。
-        h = self._dz_h or (px(74) if n else px(126))
+        h = self._dz_h or px(DZ_H_COMPACT if n else DZ_H_EMPTY)
         hot = self._drag_hot
         c.create_rectangle(px(8), px(8), w - px(8), h - px(8),
                            outline=ACCENT if hot else "#ccd4e0",
@@ -1432,17 +1735,23 @@ class ConverterApp:
                           font=F_DROP2,
                           fill=ACCENT_HOVER if hot else TXT)
             return
-        c.create_text(w / 2, h * 0.30, text="⇩", font=F_ICON,
+        # 文本宽度跟着画布走：窄窗口里两行文案会自动折行，而不是被右边裁掉。
+        # 三个锚点按「最多折成两行」留了间距（150px 高：图标 ~12-47、
+        # 主提示折两行 51-99、格式行折两行 103-137），折行也不会互相压住。
+        wrap = max(px(180), w - px(56))
+        c.create_text(w / 2, h * 0.20, text="⇩", font=F_ICON,
                       fill=ACCENT)
-        c.create_text(w / 2, h * 0.58, text=t("drop_hint"),
-                      font=F_DROP, fill=TXT if not hot else ACCENT_HOVER)
+        c.create_text(w / 2, h * 0.50, text=t("drop_hint"),
+                      font=F_DROP, fill=TXT if not hot else ACCENT_HOVER,
+                      width=wrap, justify="center")
         c.create_text(w / 2, h * 0.80,
                       text=t("drop_formats"),
-                      font=F_DROP2, fill=MUTED)
+                      font=F_DROP2, fill=MUTED,
+                      width=wrap, justify="center")
 
     def _set_dz_compact(self, compact):
         """有文件时把拖放区压扁，让文件列表拿到竖向空间。"""
-        want = px(74) if compact else px(126)
+        want = px(DZ_H_COMPACT if compact else DZ_H_EMPTY)
         if self._dz_h == want:
             return
         self._dz_h = want
@@ -1510,10 +1819,16 @@ class ConverterApp:
                 break
         if code is None or code == APP_LANG:
             return
+        # OptionMenu 存的是本地化文案，切语言前先换算回内部代号，切完再按新文案写回
+        _acode = alpha_code_of(self.var_alpha_mode.get())
         APP_LANG = code
         refresh_choices()
         try:
             self.var_zoom.set(zoom_label(self.zoom))
+        except Exception:
+            pass
+        try:
+            self.var_alpha_mode.set(alpha_label(_acode))
         except Exception:
             pass
         self._save_settings()
@@ -1532,6 +1847,9 @@ class ConverterApp:
             "fbx2pmx": t("hint_fbx2pmx"),
             "vrm2pmx": t("hint_vrm2pmx"),
             "pmx2vrm": t("hint_pmx2vrm"),
+            "uemodel2pmx": t("hint_uemodel2pmx"),
+            "pmx2uemodel": t("hint_pmx2uemodel"),
+            "psk2pmx": t("hint_psk2pmx"),
             "check": t("hint_check"),
         }
         if getattr(self, "lbl_hint", None) is not None:
@@ -1623,7 +1941,27 @@ class ConverterApp:
             self.var_edge.set(bool(s.get("vrm2pmx_edge", False)))
             self.var_center.set(bool(s.get("center", True)))
             self.var_fbx_morphs.set(bool(s.get("fbx_morphs", True)))
-            self.var_remove_alpha.set(bool(s.get("remove_alpha", False)))
+            # alpha：新键 alpha_mode 优先；老配置只有布尔 remove_alpha 时按
+            # true -> auto / false -> keep 迁移（老的 true 是「一律去 alpha」，
+            # 正是本次要修的行为；迁到自动判定既保住意图又不再误伤真透明贴图）。
+            if "alpha_mode" in s:
+                code = fbx2pmx.alpha_mode_of(s.get("alpha_mode"))
+            elif "remove_alpha" in s:
+                code = fbx2pmx.alpha_mode_of(None,
+                                             bool(s.get("remove_alpha")))
+            else:
+                code = "auto"
+            self.var_alpha_mode.set(alpha_label(code))
+            self.var_auto_facing.set(bool(s.get("auto_facing", True)))
+            self.var_face180.set(bool(s.get("face_180", False)))
+            self.var_ue_fbx.set(bool(s.get("ue_fbx", False)))
+            self.var_ue_alpha.set(bool(s.get("ue_alpha", True)))
+            self.var_ue_height.set(str(s.get("ue_height", "180")))
+            self.var_psk_jp.set(bool(s.get("psk_jp", True)))
+            self.var_psk_ik.set(bool(s.get("psk_ik", True)))
+            self.var_psk_morphs.set(bool(s.get("psk_morphs", True)))
+            self.var_psk_fbx.set(bool(s.get("psk_fbx", False)))
+            self.var_psk_alpha.set(bool(s.get("psk_alpha", True)))
             code = s.get("task", "auto")
             if code not in {c for _, c in TASK_CHOICES}:
                 code = TASK_BY_LABEL.get(code, "auto")  # 兼容旧版以标签存储的设置
@@ -1664,7 +2002,17 @@ class ConverterApp:
                            "vrm2pmx_edge": self.var_edge.get(),
                            "center": self.var_center.get(),
                            "fbx_morphs": self.var_fbx_morphs.get(),
-                           "remove_alpha": self.var_remove_alpha.get(),
+                           "alpha_mode": alpha_code_of(self.var_alpha_mode.get()),
+                           "auto_facing": self.var_auto_facing.get(),
+                           "face_180": self.var_face180.get(),
+                           "ue_fbx": self.var_ue_fbx.get(),
+                           "ue_alpha": self.var_ue_alpha.get(),
+                           "ue_height": self.var_ue_height.get(),
+                           "psk_jp": self.var_psk_jp.get(),
+                           "psk_ik": self.var_psk_ik.get(),
+                           "psk_morphs": self.var_psk_morphs.get(),
+                           "psk_fbx": self.var_psk_fbx.get(),
+                           "psk_alpha": self.var_psk_alpha.get(),
                            "split": getattr(self, "_split", 0.6),
                            "vsplit": getattr(self, "_vsplit", None)},
                           f, ensure_ascii=False, indent=2)
@@ -1723,11 +2071,14 @@ class ConverterApp:
             self.ent_out.insert(0, t("outdir_placeholder"))
 
     def browse(self):
-        types = [("支持的模型文件", "*.fbx *.unitypackage *.vrm *.pmx"),
+        types = [("支持的模型文件",
+                  "*.fbx *.unitypackage *.vrm *.pmx *.uemodel *.psk *.pskx"),
                  ("FBX 模型", "*.fbx"),
                  ("Unity 资源包", "*.unitypackage"),
                  ("VRM 模型", "*.vrm"),
                  ("PMX 模型", "*.pmx"),
+                 ("UEFormat 模型", "*.uemodel"),
+                 ("PSK / PSKX 模型", "*.psk *.pskx"),
                  ("所有文件", "*.*")]
         paths = filedialog.askopenfilenames(title=t("dlg_title"),
                                             filetypes=types)
@@ -1830,6 +2181,9 @@ class ConverterApp:
         want = {"fbx2pmx": ("fbx", "unitypackage"),
                 "vrm2pmx": ("vrm",),
                 "pmx2vrm": ("pmx",),
+                "uemodel2pmx": ("uemodel",),
+                "pmx2uemodel": ("pmx",),
+                "psk2pmx": ("psk",),
                 "check": ("pmx",)}[task]
         keep = [f for f in files if classify(f) in want]
         if not keep and notify:
@@ -2050,7 +2404,17 @@ class ConverterApp:
             "edge": bool(self.var_edge.get()),
             "center": bool(self.var_center.get()),
             "fbx_morphs": bool(self.var_fbx_morphs.get()),
-            "remove_alpha": bool(self.var_remove_alpha.get()),
+            "alpha_mode": alpha_code_of(self.var_alpha_mode.get()),
+            "auto_facing": bool(self.var_auto_facing.get()),
+            "face_180": bool(self.var_face180.get()),
+            "ue_fbx": bool(self.var_ue_fbx.get()),
+            "ue_alpha": bool(self.var_ue_alpha.get()),
+            "ue_height": self.var_ue_height.get(),
+            "psk_jp": bool(self.var_psk_jp.get()),
+            "psk_ik": bool(self.var_psk_ik.get()),
+            "psk_morphs": bool(self.var_psk_morphs.get()),
+            "psk_fbx": bool(self.var_psk_fbx.get()),
+            "psk_alpha": bool(self.var_psk_alpha.get()),
         }
 
     def _run(self, files):
@@ -2125,6 +2489,15 @@ class ConverterApp:
         if task == "pmx2vrm":
             return self._do_pmx2vrm(path, folder, cfg)
 
+        if task == "uemodel2pmx":
+            return self._do_uemodel2pmx(path, folder, cfg)
+
+        if task == "pmx2uemodel":
+            return self._do_pmx2uemodel(path, folder, cfg)
+
+        if task == "psk2pmx":
+            return self._do_psk2pmx(path, folder, cfg)
+
         return self._do_fbx2pmx(path, kind, folder, cfg)
 
     # -- VRM → PMX ---------------------------------------------------------
@@ -2165,6 +2538,143 @@ class ConverterApp:
         # 预览用源 PMX 渲染（VRM 本身没有渲染器）
         self._report(path, os.path.dirname(os.path.abspath(path)), cfg)
         return [out]
+
+    # -- uemodel (UEFormat) → PMX ------------------------------------------
+    def _do_uemodel2pmx(self, path, folder, cfg):
+        q = self.q
+        stem = os.path.splitext(os.path.basename(path))[0]
+        out = os.path.join(folder, stem + ".pmx")
+        fbx = os.path.join(folder, stem + ".fbx") if cfg.get("ue_fbx") else None
+        q.put(("log", ""))
+        q.put(("log", "→ %s" % os.path.basename(path), "head"))
+        q.put(("log", "读取 UEFormat…", "info"))
+        st = uemodel2pmx.convert(path, out, scale_mode=cfg["scale"],
+                                 log=self._logfn(), name=stem,
+                                 fbx_path=fbx,
+                                 remove_alpha=cfg.get("ue_alpha", True),
+                                 force_double_sided=cfg.get("force_two_sided",
+                                                            False))
+        q.put(("log", "已写出 %s（%s）"
+               % (os.path.basename(out), human(st["bytes"])), "ok"))
+        if fbx:
+            if st.get("fbx"):
+                q.put(("log", "同时导出 %s（%s）"
+                       % (os.path.basename(fbx), human(st["fbx"]["bytes"])),
+                       "ok"))
+            else:
+                q.put(("log", "FBX 导出失败：%s"
+                       % (st.get("fbx_error") or "未知原因"), "err"))
+        self._report(out, folder, cfg)
+        made = [out]
+        if fbx and os.path.isfile(fbx):
+            made.append(fbx)
+        return made
+
+    # -- PMX → uemodel (UEFormat) ------------------------------------------
+    def _do_pmx2uemodel(self, path, folder, cfg):
+        q = self.q
+        stem = os.path.splitext(os.path.basename(path))[0]
+        out = os.path.join(folder, stem + ".uemodel")
+        # 缩放口径：自动 = 按身高折算成 UE 的厘米；原始尺寸 = 1:1；自定义 = 倍数
+        sc = cfg.get("scale", "mmd")
+        if isinstance(sc, str) or sc in ("mmd", "auto", None):
+            mode = "ue"
+        elif float(sc) == 1.0:
+            mode = "keep"
+        else:
+            mode = float(sc)
+        try:
+            height = float((cfg.get("ue_height") or "180").strip())
+        except (TypeError, ValueError, AttributeError):
+            height = 180.0
+        if not (1.0 < height < 10000.0):
+            q.put(("log", "身高取值不合理（%s），按 180cm 处理" % height, "warn"))
+            height = 180.0
+        q.put(("log", ""))
+        q.put(("log", "→ %s" % os.path.basename(path), "head"))
+        q.put(("log", "读取 PMX…", "info"))
+        st = pmx2uemodel.convert(path, out, scale_mode=mode, height=height,
+                                 log=self._logfn(), name=stem)
+        q.put(("log", "已写出 %s（%s）"
+               % (os.path.basename(out), human(st["bytes"])), "ok"))
+        self._report_uemodel(out, folder, cfg)
+        return [out]
+
+    # -- psk / pskx (Unreal ActorX) → PMX ---------------------------------
+    def _do_psk2pmx(self, path, folder, cfg):
+        q = self.q
+        stem = os.path.splitext(os.path.basename(path))[0]
+        out = os.path.join(folder, stem + ".pmx")
+        fbx = os.path.join(folder, stem + ".fbx") if cfg.get("psk_fbx") else None
+        q.put(("log", ""))
+        q.put(("log", "→ %s" % os.path.basename(path), "head"))
+        q.put(("log", "读取 PSK…", "info"))
+        st = psk2pmx.convert(path, out, scale_mode=cfg["scale"],
+                             log=self._logfn(), name=stem,
+                             fbx_path=fbx,
+                             jp_bones=cfg.get("psk_jp", True),
+                             make_ik=cfg.get("psk_ik", True),
+                             export_morphs=cfg.get("psk_morphs", True),
+                             remove_alpha=cfg.get("psk_alpha", True),
+                             force_double_sided=cfg.get("force_two_sided",
+                                                        False))
+        q.put(("log", "已写出 %s（%s）"
+               % (os.path.basename(out), human(st["bytes"])), "ok"))
+        if fbx:
+            if st.get("fbx"):
+                q.put(("log", "同时导出 %s（%s）"
+                       % (os.path.basename(fbx), human(st["fbx"]["bytes"])),
+                       "ok"))
+            else:
+                q.put(("log", "FBX 导出失败：%s"
+                       % (st.get("fbx_error") or "未知原因"), "err"))
+        self._report(out, folder, cfg)
+        made = [out]
+        if fbx and os.path.isfile(fbx):
+            made.append(fbx)
+        return made
+
+    def _report_uemodel(self, path, folder, cfg):
+        """回读 .uemodel 做结构校验，并把预览交给模型视图。"""
+        q = self.q
+        q.put(("log", "校验中…", "info"))
+        try:
+            m = uemodelio.read_uemodel(path)
+        except Exception as e:
+            q.put(("log", "uemodel 回读失败：%s" % e, "err"))
+            return
+        lod = m.lods[0] if m.lods else None
+        if lod is None:
+            q.put(("log", "   ✗ 文件里没有 LOD 数据", "err"))
+            return
+        nt = len(lod.indices) // 3
+        cov = sum(int(x.num_faces) for x in lod.materials)
+        q.put(("log", "   UEFormat v%d · 顶点 %d · 三角面 %d · 骨骼 %d · 材质 %d"
+               % (m.version, len(lod.vertices), nt, len(m.skeleton.bones),
+                  len(lod.materials)), "mono"))
+        q.put(("log", "   权重 %d 条 · 表情 %d 个 · UV %d 套"
+               % (len(lod.weights), len(lod.morphs), len(lod.uvs)), "mono"))
+        bad = []
+        if cov != nt:
+            bad.append("材质面区间合计 %d 面 ≠ 索引缓冲 %d 面" % (cov, nt))
+        if any(w.bone >= len(m.skeleton.bones) for w in lod.weights):
+            bad.append("有权重指向不存在的骨骼")
+        nv = len(lod.vertices)
+        if any(i >= nv or i < 0 for i in lod.indices):
+            bad.append("有越界的顶点索引")
+        if bad:
+            for b in bad:
+                q.put(("log", "   ✗ " + b, "err"))
+        else:
+            q.put(("log", "   ✓ 结构校验通过（字节数、索引、权重、材质覆盖）",
+                   "ok"))
+
+        try:
+            q.put(("log", "生成预览…", "info"))
+            mesh = model_preview.mesh_from_uemodel(path)
+            q.put(("mesh", mesh, path))
+        except Exception as e:
+            q.put(("log", "预览渲染失败：%s" % e, "warn"))
 
     # -- FBX / unitypackage → PMX -----------------------------------------
     def _do_fbx2pmx(self, path, kind, folder, cfg):
@@ -2208,7 +2718,34 @@ class ConverterApp:
                                  flip_z=cfg["flip_z"], name=stem,
                                  center=cfg.get("center", True),
                                  morphs=cfg.get("fbx_morphs", True),
-                                 remove_alpha=cfg.get("remove_alpha", False))
+                                 alpha_mode=cfg.get("alpha_mode", "auto"),
+                                 auto_facing=cfg.get("auto_facing", True),
+                                 face_180=cfg.get("face_180", False))
+            # 朝向依据写进日志：判错了能看懂是凭什么判的、也能手动覆盖
+            _turn = t("log_turn_on") if st.get("face_turn") else t("log_turn_off")
+            if cfg.get("auto_facing", True):
+                q.put(("log", t("log_facing_auto",
+                                reason=st.get("facing_reason", ""),
+                                turn=_turn), "mono"))
+            else:
+                q.put(("log", t("log_facing_off", turn=_turn), "mono"))
+            # 贴图 alpha 逐张的判定明细
+            al = st.get("alpha") or {}
+            if al and al.get("mode") != "keep":
+                q.put(("log", t("log_alpha_head",
+                                mode=alpha_label(al.get("mode", "auto")),
+                                stripped=al.get("stripped", 0),
+                                kept=al.get("kept", 0),
+                                opaque=al.get("opaque", 0)), "mono"))
+                for bn, verdict, detail in al.get("decisions", [])[:24]:
+                    if verdict == "strip":
+                        q.put(("log", t("log_alpha_strip_one", name=bn,
+                                        detail=detail), "mono"))
+                    else:
+                        q.put(("log", t("log_alpha_keep_one", name=bn,
+                                        detail=detail), "mono"))
+                if al.get("failed"):
+                    q.put(("log", t("log_alpha_fail", n=al["failed"]), "warn"))
             _extra = ""
             if st.get("morphs"):
                 _extra = "，%d 个表情" % st["morphs"]
@@ -2243,7 +2780,7 @@ class ConverterApp:
         if len(m["morphs"]) == 0:
             q.put(("log", "   提示：无表情数据，需在 PMXEditor 里手动添加", "warn"))
 
-        # preview：读取 PMX 网格 → 实时背视图预览（只显示，不落盘保存图片）
+        # preview：读取 PMX 网格 → 实时正面预览（只显示，不落盘保存图片）
         try:
             q.put(("log", "生成预览…", "info"))
             mesh = model_preview.mesh_from_pmx(pmx)
@@ -2313,9 +2850,9 @@ class ConverterApp:
         return out
 
     def _kick_preview(self, files, force=False):
-        """把第一个文件的背视图显示出来（实时反馈，不做任何转换）。
+        """把第一个文件的正面显示出来（实时反馈，不做任何转换）。
 
-        对 VRM / PMX 这类可能内嵌大量贴图的格式，先以“基色”立刻出背视图，
+        对 VRM / PMX 这类可能内嵌大量贴图的格式，先以“基色”立刻出正面，
         再在后台线程解码贴图、到位后只重绘（不打断用户视角）——保证拖入即见。
 
         force=False 时，若这个文件已经预览过就不再重载：点「开始转换」不该把
@@ -2329,16 +2866,21 @@ class ConverterApp:
             return
         self._previewed = first
         kind = model_preview.classify(first)
+        _flipz = bool(self.var_flipz.get())
+        _autoface = bool(self.var_auto_facing.get())
+        _face180 = bool(self.var_face180.get())
 
         def job():
             try:
                 if kind in ("vrm", "pmx"):
                     mesh = model_preview.load_preview(first, with_textures=False)
-                    self.q.put(("mesh", mesh, first))     # 立刻出背视图（基色）
+                    self.q.put(("mesh", mesh, first))     # 立刻出正面（基色）
                     if mesh.load_textures():
                         self.q.put(("mesh_tex", mesh, first))  # 贴图到位后重绘
                 else:
-                    mesh = model_preview.load_preview(first)
+                    mesh = model_preview.load_preview(
+                        first, flip_z=_flipz, auto_facing=_autoface,
+                        face_180=_face180)
                     self.q.put(("mesh", mesh, first))
             except Exception as e:
                 # 失败就把“已预览”标记撤回，下次（例如点开始转换时）还能再试
