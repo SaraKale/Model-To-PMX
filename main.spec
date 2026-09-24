@@ -1,5 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
+import sys
 
+app_name = 'ModelConvert'
+
+is_win = sys.platform.startswith('win')
+is_mac = sys.platform == 'darwin'
+is_linux = sys.platform.startswith('linux')
+
+if is_win:
+    icon_file = 'MC_2.ico'
+elif is_mac:
+    icon_file = 'MC_2.icns'
+else:
+    icon_file = None
 
 a = Analysis(
     ['main.py'],
@@ -30,12 +43,12 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='ModelConvert',
-    icon='MC_2.ico',
+    name=app_name,
+    icon=icon_file,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=True if is_win else False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -48,7 +61,13 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='ModelConvert.exe',
+    upx=False,
+    name=app_name,
 )
+if is_mac:
+    app = BUNDLE(
+        coll,
+        name=f'{app_name}.app',
+        icon=icon_file,
+        bundle_identifier='com.modelconvert.app',
+    )
