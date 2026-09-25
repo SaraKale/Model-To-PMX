@@ -44,10 +44,16 @@
 2) 四元数要取共轭（(x,y,z,w) → 取 (x,y,z) 的负号）后才是引擎常用右手系下
    的旋转；不共轭的话骨骼世界坐标会整条链歪出去（实测头骨能偏 30 多个单位）。
 """
+import os
 import struct
 
 __all__ = ["Psk", "PskBone", "PskMaterial", "PskMorph", "read_psk",
-           "bone_world", "quat_to_matrix"]
+           "bone_world", "quat_to_matrix", "write_psk"]
+
+# 写入时用的块头版本号：实测样本（二重螺旋 R2T1*）的两个 ACTRHEAD 都放的是
+# 20220723，照抄以保证同一套文件能被同一批工具读。标准 ActorX 写的是 1999801
+# 之类的日期串，但那只是个标记，读者一般不校验。
+PSK_VERSION = 20220723
 
 # ------------------------------------------------------------------ data ---
 class PskBone(object):
@@ -308,3 +314,209 @@ def read_psk(path):
             if rest:
                 psk.morphs.append(PskMorph("morph_rest", rest))
     return psk
+
+
+# ----------------------------------------------------------------- writer ---
+# 写入的块顺序照抄实测样本（读的一侧对顺序不敏感，但保持一致最省事）：
+#   ACTRHEAD ×2 → PNTS0000 → VTXW0000 → FACE0000/FACE3200 → MATT0000
+#   → VTXNORMS → REFSKELT → RAWWEIGHTS → VERTEXCOLOR → EXTRAUVS*
+#   → MRPHINFO → MRPHDATA
+# 其中 VTXNORMS / VERTEXCOLOR / EXTRAUVS* / MRPH* 都属于「非标准扩展块」
+# （DarklightGames 插件把带这些块的文件叫 .pskx，且只导进不导出），
+# 所以 pskx=False 时会整段跳过，写出的就是 Epic 那套标准 .psk。
+def _chunk(name, dsize, dcount, payload, flag=0):
+    head = name.encode("ascii")[:20].ljust(20, b"\x00")
+    return head + struct.pack("<iii", flag, dsize, dcount) + payload
+
+
+def _fix_bones(psk):
+    """写之前把 children_count / length 补齐。
+
+    children_count = 直接子骨数；length = 到第一个子骨的距离。
+    PSK 骨骼只带平移（本项目写出的都是单位四元数），所以「到子骨的局部平移
+    长度」就等于世界距离，不用再累乘一条链。
+    """
+    n = len(psk.bones)
+    kids = [[] for _ in range(n)]
+    for i, b in enumerate(psk.bones):
+        p = b.parent_index
+        if 0 <= p < n and p != i:
+            kids[p].append(i)
+    for i, b in enumerate(psk.bones):
+        b.children_count = len(kids[i])
+        if kids[i]:
+            c = psk.bones[kids[i][0]].location
+            b.length = (c[0] ** 2 + c[1] ** 2 + c[2] ** 2) ** 0.5
+        else:
+            b.length = 0.0
+    return psk
+
+
+def _pad(seq, n, fill):
+    """把 seq 补/截到长度 n（缺的用 fill 填，多出来的丢掉）。"""
+    seq = list(seq)
+    if len(seq) >= n:
+        return seq[:n]
+    return seq + [fill] * (n - len(seq))
+
+
+def write_psk(psk, path, pskx=True, version=None, headers=2, face32=None,
+              log=None):
+    """把 Psk 写成 .psk / .pskx 二进制，返回字节数。
+
+    pskx    : True  → 连 VTXNORMS / VERTEXCOLOR / EXTRAUVS* / MRPH* 一起写
+                      （信息最全，与实测样本一致）
+              False → 只写标准块（PNTS/VTXW/FACE/MATT/REFSKELT/RAWWEIGHTS），
+                      扩展内容会被丢弃并在日志里计数
+    face32  : None 自动（顶点数 > 65535 就用 FACE3200），也可强制 True/False
+    headers : 开头的 ACTRHEAD 个数，实测样本是 2（外层那个是游戏多写的）
+    """
+    def _l(msg, tag=None):
+        if log:
+            log(msg, tag)
+
+    n_point = len(psk.points)
+    n_wedge = len(psk.wedges)
+
+    # ---- 索引合法性：越界的一律夹回范围内，别写出打不开的文件
+    bad_w = 0
+    wedges = []
+    for pi, u, v, mi in psk.wedges:
+        ip = int(pi)
+        if not (0 <= ip < n_point) and n_point:
+            ip = min(max(ip, 0), n_point - 1)
+            bad_w += 1
+        wedges.append((ip, float(u), float(v), int(mi or 0)))
+    if bad_w:
+        _l("提示：%d 个楔的点索引越界，已夹回合法范围" % bad_w, "warn")
+
+    max_idx = 0
+    for f in psk.faces:
+        try:
+            max_idx = max(max_idx, int(f[0][0]), int(f[0][1]), int(f[0][2]))
+        except (TypeError, IndexError, ValueError):
+            pass
+    if face32 is None:
+        face32 = bool(getattr(psk, "face32", False)) or max_idx > 0xFFFF or \
+            n_wedge > 0xFFFF
+    if not face32 and (max_idx > 0xFFFF or n_wedge > 0xFFFF):
+        _l("提示：顶点数 %d 超过 16 位索引上限，已改用 FACE3200" % n_wedge,
+           "warn")
+        face32 = True
+
+    bad_f = 0
+    faces = []
+    for tri, mi in psk.faces:
+        a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
+        if n_wedge and not (0 <= a < n_wedge and 0 <= b < n_wedge
+                            and 0 <= c < n_wedge):
+            bad_f += 1
+        faces.append(((a, b, c), int(mi or 0)))
+    if bad_f:
+        _l("提示：%d 个面的楔索引越界（文件可能显示为破面）" % bad_f, "warn")
+
+    out = []
+    ver = int(version if version is not None else PSK_VERSION)
+    for _ in range(int(headers)):
+        out.append(_chunk("ACTRHEAD", 0, 0, b"", ver))
+
+    out.append(_chunk("PNTS0000", 12, n_point,
+                      b"".join(struct.pack("<3f", *p) for p in psk.points)))
+    out.append(_chunk("VTXW0000", 16, n_wedge,
+                      b"".join(struct.pack("<IffI", *w) for w in wedges)))
+    if face32:
+        out.append(_chunk("FACE3200", 18, len(faces),
+                          b"".join(struct.pack("<3IBBi", t[0], t[1], t[2],
+                                               m, 0, 0) for t, m in faces)))
+    else:
+        out.append(_chunk("FACE0000", 12, len(faces),
+                          b"".join(struct.pack("<3HBBi", t[0], t[1], t[2],
+                                               m, 0, 0) for t, m in faces)))
+
+    nm = len(psk.materials)
+    out.append(_chunk("MATT0000", 88, nm,
+                      b"".join(struct.pack("<64s6i",
+                                           (x.name or "").encode(
+                                               "ascii", "replace")[:63]
+                                           .ljust(64, b"\x00"),
+                                           int(x.texture_index or 0),
+                                           int(x.poly_flags or 0),
+                                           int(x.aux_material or 0),
+                                           int(x.aux_flags or 0),
+                                           int(x.lod_bias or 0),
+                                           int(x.lod_style or 0))
+                               for x in psk.materials)))
+
+    if pskx:
+        nrm = _pad(psk.normals, n_wedge, (0.0, 0.0, 1.0))
+        # 法线按「楔」存（和 EXTRAUVS / VERTEXCOLOR 一样是一楔一条）
+        out.append(_chunk("VTXNORMS", 12, n_wedge,
+                          b"".join(struct.pack("<3f", *n) for n in nrm)))
+
+    _fix_bones(psk)
+    nb = len(psk.bones)
+    bb = []
+    for b in psk.bones:
+        q = _pad(tuple(b.rotation or ()), 4, 0.0)
+        sz = _pad(tuple(b.size or ()), 3, 1.0)
+        bb.append(struct.pack(
+            "<64s3i4f3ff3f",
+            (b.name or "").encode("ascii", "replace")[:63].ljust(64, b"\x00"),
+            int(b.flags or 0), int(b.children_count or 0),
+            int(b.parent_index if b.parent_index is not None else -1),
+            float(q[0]), float(q[1]), float(q[2]), float(q[3]),
+            float(b.location[0]), float(b.location[1]), float(b.location[2]),
+            float(b.length or 0.0),
+            float(sz[0]), float(sz[1]), float(sz[2])))
+    out.append(_chunk("REFSKELT", 120, nb, b"".join(bb)))
+
+    nw = len(psk.weights)
+    out.append(_chunk("RAWWEIGHTS", 12, nw,
+                      b"".join(struct.pack("<fii", float(w), int(pi), int(bi))
+                               for w, pi, bi in psk.weights)))
+
+    if pskx:
+        col = _pad(psk.colors, n_wedge, (255, 255, 255, 255))
+        out.append(_chunk("VERTEXCOLOR", 4, n_wedge,
+                          b"".join(struct.pack("<4B", *c[:4]) for c in col)))
+        for k, uv in enumerate(psk.extra_uvs[:8]):
+            seq = _pad(uv, n_wedge, (0.0, 0.0))
+            out.append(_chunk("EXTRAUVS%d" % k, 8, n_wedge,
+                              b"".join(struct.pack("<2f", *t[:2])
+                                       for t in seq)))
+
+        infos = []
+        data = []
+        for mo in psk.morphs:
+            offs = [(int(pi), tuple(d)) for pi, d in mo.offsets
+                    if 0 <= int(pi) < n_point]
+            if not offs:
+                continue
+            infos.append((mo.name, len(offs)))
+            for pi, d in offs:
+                data.append((d, pi))
+        if infos:
+            out.append(_chunk(
+                "MRPHINFO", 68, len(infos),
+                b"".join(struct.pack("<64si",
+                                     (nm_ or "").encode("ascii", "replace")
+                                     [:63].ljust(64, b"\x00"), c_)
+                         for nm_, c_ in infos)))
+            out.append(_chunk(
+                "MRPHDATA", 28, len(data),
+                b"".join(struct.pack("<3f3fi", d[0], d[1], d[2], 0.0, 0.0,
+                                     0.0, pi) for d, pi in data)))
+
+    blob = b"".join(out)
+    d = os.path.dirname(os.path.abspath(path))
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as fp:
+        fp.write(blob)
+    os.replace(tmp, path)
+    _l("PSK：顶点 %d · 楔 %d · 面 %d · 骨骼 %d · 材质 %d · 权重 %d%s"
+       % (n_point, n_wedge, len(faces), nb, nm, nw,
+          (" · 表情 %d" % len(psk.morphs)) if (pskx and psk.morphs) else ""),
+       "info")
+    return len(blob)

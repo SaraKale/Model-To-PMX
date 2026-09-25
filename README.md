@@ -25,6 +25,8 @@ Download the latest version from [releases](https://github.com/SaraKale/Model-to
 | uemodel (UEFormat) → PMX | Reads the public UEFormat `.uemodel` (v1–v10); can also write an ASCII FBX in the same run |
 | PMX → uemodel (UEFormat) | Writes UEFormat `.uemodel` (v9 by default, v10 optional) for the UE / FModel toolchain |
 | PSK / PSKX (Unreal ActorX) → PMX | Reads Unreal `.psk` (`FACE0000`) / `.pskx` (`FACE3200`) with skin weights, MRPH vertex morphs and extra UVs |
+| PMX → FBX | Writes ASCII FBX 7.4 (bones, weights, BlendShape morphs, relative texture paths) |
+| PMX → psk / pskx | Writes Unreal ActorX format; `.pskx` carries normals / vertex colors / extra UVs / morphs; `.psk` is the standard subset |
 | PMX → validation + preview only | Read-only structural validation; no file output |
 
 ### Core features
@@ -85,6 +87,7 @@ Model-to-PMX/
 │   ├── pmx2vrm.py               #   PMX → VRM
 │   ├── uemodel2pmx.py           #   uemodel (UEFormat) → PMX (+ optional ASCII FBX)
 │   ├── pmx2uemodel.py           #   PMX → uemodel (UEFormat)
+│   ├── pmx2psk.py               #   PMX → psk / pskx (Unreal ActorX)
 │   ├── psk2pmx.py               #   PSK / PSKX (Unreal ActorX) → PMX
 │   └── pmx_check.py             #   PMX validation + software-rendered preview image
 │
@@ -194,6 +197,15 @@ python convert/pmx2uemodel.py "model.pmx" -o "model.uemodel" --version 10
 # textures are looked up by material name in the source folder
 python convert/psk2pmx.py "model.psk" -o "model.pmx"
 python convert/psk2pmx.py "model.pskx" -o "model.pmx" --raw-bone-names --no-ik
+
+# PMX → FBX (ASCII 7.4, with bones/weights/BlendShapes/relative texture paths)
+python convert/fbxout.py "model.pmx" -o "model.fbx"
+
+# PMX → pskx (default pskx, with normals/extra UVs/morphs; default target height 160 cm)
+python convert/pmx2psk.py "model.pmx" -o "model.pskx"
+
+# PMX → psk (standard chunks only, no normals/morphs)
+python convert/pmx2psk.py "model.pmx" -o "model.psk" --std
 
 # PMX validation + generate preview image
 python convert/pmx_check.py "model.pmx"
@@ -367,10 +379,14 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 - **Bone names**: FBX conversion keeps English bone names (`Hips`, `Spine` …), so they won't match MMD's ready-made motions (.vmd); you must batch-rename them to the Japanese standard names in PMXEditor.
   PSK takes a different route: the Bip001 (3ds Max Biped) naming is **converted to MMD standard Japanese names by default**, with the original English name kept in the bone's English-name field.
 - **Morphs**: When the source model has no BlendShape / morph, the PMX morphs are also 0 and must be created by hand.
-- **PSK is one-way only**: `.psk` / `.pskx` can only be converted to PMX; there is no reverse export.
 - **PSK axes are a fixed mapping**: Unreal's PSK is "`+X` left hand, `-Y` front, `+Z` up" while PMX is
   "`+X` left hand, `-Z` front, `+Y` up" — opposite handedness, so the axis swap must include **one reflection**
   (`(x, y, z) → (x, z, y)`). This is hard-coded; there is no "auto-detect facing" switch like FBX has.
+- **PSK / PSKX round-trip caveats**:
+  - PMX→psk bone names fall back to `name_en`; if that is empty, a JP→EN lookup table is used
+    (`全ての親` → `Root`, `センター` → `Center`, etc.); otherwise they become `bone%03d`.
+  - PMX IK / inherit / rigidbody / joint / UV-morph / material-morph have no PSK equivalent and are skipped.
+  - PMX allows at most 4 bones per vertex; if the original PSK has 5–6, they are lost on round-trip.
 - **The `.psk` extension collides**: PmxEditor stores its "anchor data" in `.psk` files, the same extension Unreal meshes use.
   See "PmxEditor reports アンカーデータの読み込みに失敗しました" below.
 

@@ -28,6 +28,7 @@ import queue
 import struct
 import sys
 import threading
+import time
 import traceback
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -45,6 +46,8 @@ for _sub in ("formats", "convert", "gfx"):
         sys.path.insert(0, _p)
 
 import fbx2pmx
+import fbxout
+import pmx2psk
 import pmx2uemodel
 import pmx_check
 import pmx2vrm
@@ -136,6 +139,8 @@ LANG = {
         "task_uemodel2pmx": "uemodel → PMX",
         "task_pmx2uemodel": "PMX → uemodel",
         "task_psk2pmx": "psk / pskx → PMX",
+        "task_pmx2fbx": "PMX → FBX",
+        "task_pmx2psk": "PMX → psk / pskx",
         "task_check": "PMX 仅校验 + 预览",
         "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM　·　.uemodel → PMX　·　.psk/.pskx → PMX",
         "hint_fbx2pmx": "FBX / unitypackage 转成 MMD 的 PMX",
@@ -144,6 +149,8 @@ LANG = {
         "hint_uemodel2pmx": "UEFormat(.uemodel) 转成 MMD 的 PMX（贴图按同目录的 MI_*.json 关联）",
         "hint_pmx2uemodel": "PMX 转成 UEFormat(.uemodel)，可给 FortnitePorting / UE 插件用",
         "hint_psk2pmx": "Unreal ActorX 的 .psk / .pskx 转成 MMD 的 PMX（骨骼转日文标准名、带表情）",
+        "hint_pmx2fbx": "PMX 转成 ASCII FBX 7.4（贴图引用相对路径 textures/…）",
+        "hint_pmx2psk": "PMX 转成 Unreal ActorX 的 .psk / .pskx（骨骼名取英文，带表情与附加 UV）",
         "hint_check": "只读取 PMX 做结构校验和预览，不输出文件",
         "scale": "缩放",
         "scale_auto": "自动",
@@ -229,8 +236,14 @@ LANG = {
         "opt_psk_morphs": "导出表情（MRPH 顶点位移 → PMX 表情）",
         "opt_psk_fbx": "psk / pskx → PMX 时同时导出 FBX 文件",
         "opt_psk_alpha": "导出 PMX 时去除贴图透明通道（UE 贴图 alpha 常是数据遮罩）",
-        "note_psk": "（.psk / .pskx 是 Unreal 的 ActorX 交换格式，FModel / UEViewer 从 UE 资源导出；会自动换轴成 MMD 的 Y-up、按身高归一到 20 单位，贴图按材质名在源文件同目录找同名图片）",
+        "psk_out": "PMX → psk 输出格式",
+        "psk_out_pskx": "pskx（含法线/顶点色/附加UV/表情）",
+        "psk_out_psk": "psk（仅标准块）",
+        "opt_psk_height": "PSK 目标身高",
+        "opt_psk_tex": "PMX → psk 时把贴图导出到 textures 文件夹",
+        "note_psk": "（.psk / .pskx 是 Unreal 的 ActorX 交换格式，FModel / UEViewer 从 UE 资源导出。psk→PMX 会自动换轴成 MMD 的 Y-up、按身高归一到 20 单位，贴图按材质名在源文件同目录找同名图片；PMX→psk 反向同样换轴一次，按上面的身高折算成厘米。.pskx 是带法线/顶点色/附加 UV/表情块的扩展格式，标准 .psk 只留顶点/面/材质/骨骼/权重）",
         "tab_output": "输出",
+        "opt_subfolder": "输出到同名子文件夹（文件名_日期_序号）",
         "zoom_auto": "自动（跟随系统）",
         "msg_title": "提示",
         "msg_pick": "请先把 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx 文件拖进窗口，或点击拖放区域选择文件。",
@@ -266,6 +279,8 @@ LANG = {
         "task_uemodel2pmx": "uemodel → PMX",
         "task_pmx2uemodel": "PMX → uemodel",
         "task_psk2pmx": "psk / pskx → PMX",
+        "task_pmx2fbx": "PMX → FBX",
+        "task_pmx2psk": "PMX → psk / pskx",
         "task_check": "PMX 僅校驗 + 預覽",
         "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM　·　.uemodel → PMX　·　.psk/.pskx → PMX",
         "hint_fbx2pmx": "FBX / unitypackage 轉成 MMD 的 PMX",
@@ -274,6 +289,8 @@ LANG = {
         "hint_uemodel2pmx": "UEFormat(.uemodel) 轉成 MMD 的 PMX（貼圖依同目錄的 MI_*.json 關聯）",
         "hint_pmx2uemodel": "PMX 轉成 UEFormat(.uemodel)，可給 FortnitePorting / UE 外掛用",
         "hint_psk2pmx": "Unreal ActorX 的 .psk / .pskx 轉成 MMD 的 PMX（骨骼轉日文標準名、含表情）",
+        "hint_pmx2fbx": "PMX 轉成 ASCII FBX 7.4（貼圖是相對路徑 textures/…）",
+        "hint_pmx2psk": "PMX 轉成 Unreal ActorX 的 .psk / .pskx（骨骼用英文名，含表情與附加 UV）",
         "hint_check": "只讀取 PMX 做結構校驗和預覽，不輸出檔案",
         "scale": "縮放",
         "scale_auto": "自動",
@@ -359,8 +376,14 @@ LANG = {
         "opt_psk_morphs": "匯出表情（MRPH 頂點位移 → PMX 表情）",
         "opt_psk_fbx": "psk / pskx → PMX 時同時匯出 FBX 檔案",
         "opt_psk_alpha": "匯出 PMX 時去除貼圖透明通道（UE 貼圖 alpha 常是資料遮罩）",
-        "note_psk": "（.psk / .pskx 是 Unreal 的 ActorX 交換格式，FModel / UEViewer 從 UE 資源匯出；會自動換軸成 MMD 的 Y-up、按身高歸一到 20 單位，貼圖依材質名在來源檔同目錄找同名圖片）",
+        "psk_out": "PMX → psk 輸出格式",
+        "psk_out_pskx": "pskx（含法線/頂點色/附加UV/表情）",
+        "psk_out_psk": "psk（僅標準區塊）",
+        "opt_psk_height": "PSK 目標身高",
+        "opt_psk_tex": "PMX → psk 時把貼圖匯出到 textures 資料夾",
+        "note_psk": "（.psk / .pskx 是 Unreal 的 ActorX 交換格式，FModel / UEViewer 從 UE 資源匯出。psk→PMX 會自動換軸成 MMD 的 Y-up、按身高歸一到 20 單位，貼圖依材質名在來源檔同目錄找同名圖片；PMX→psk 反向同樣換軸一次，按上面的身高折算成公分。.pskx 是帶法線/頂點色/附加 UV/表情區塊的擴充格式，標準 .psk 只留頂點/面/材質/骨骼/權重）",
         "tab_output": "輸出",
+        "opt_subfolder": "輸出到同名子資料夾（檔名_日期_序號）",
         "zoom_auto": "自動（跟隨系統）",
         "msg_title": "提示",
         "msg_pick": "請先把 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx 檔案拖進視窗，或點擊拖放區域選擇檔案。",
@@ -396,6 +419,8 @@ LANG = {
         "task_uemodel2pmx": "uemodel → PMX",
         "task_pmx2uemodel": "PMX → uemodel",
         "task_psk2pmx": "psk / pskx → PMX",
+        "task_pmx2fbx": "PMX → FBX",
+        "task_pmx2psk": "PMX → psk / pskx",
         "task_check": "PMX check + preview only",
         "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM　·　.uemodel → PMX　·　.psk/.pskx → PMX",
         "hint_fbx2pmx": "Convert FBX / unitypackage into MMD PMX",
@@ -404,6 +429,8 @@ LANG = {
         "hint_uemodel2pmx": "Convert UEFormat (.uemodel) into MMD PMX (textures linked via the sibling MI_*.json)",
         "hint_pmx2uemodel": "Convert PMX into UEFormat (.uemodel) for FortnitePorting / UE plugins",
         "hint_psk2pmx": "Convert Unreal ActorX .psk / .pskx into MMD PMX (standard JP bone names, morphs included)",
+        "hint_pmx2fbx": "Convert PMX into ASCII FBX 7.4 (textures referenced as relative textures/…)",
+        "hint_pmx2psk": "Convert PMX into Unreal ActorX .psk / .pskx (English bone names, morphs and extra UVs)",
         "hint_check": "Only read PMX for structure check and preview, no output file",
         "scale": "Scale",
         "scale_auto": "Auto",
@@ -489,8 +516,14 @@ LANG = {
         "opt_psk_morphs": "Export morphs (MRPH vertex deltas → PMX morphs)",
         "opt_psk_fbx": "Also export an FBX file when converting psk / pskx → PMX",
         "opt_psk_alpha": "Strip texture alpha when exporting PMX (UE alpha is often a data mask)",
-        "note_psk": "(.psk / .pskx is Unreal's ActorX exchange format exported by FModel / UEViewer. Axes are re-mapped to MMD's Y-up, the height is normalised to 20 units, and textures are matched by material name next to the source file)",
+        "psk_out": "PMX → psk output format",
+        "psk_out_pskx": "pskx (normals / vertex colors / extra UVs / morphs)",
+        "psk_out_psk": "psk (standard chunks only)",
+        "opt_psk_height": "PSK target height",
+        "opt_psk_tex": "Export textures into a textures folder when converting PMX → psk",
+        "note_psk": "(.psk / .pskx is Unreal's ActorX exchange format exported by FModel / UEViewer. psk → PMX re-maps axes to MMD's Y-up, normalises the height to 20 units and matches textures by material name next to the source; PMX → psk swaps axes once again and scales to the height above in centimetres. .pskx is the extended flavour carrying normals / vertex colors / extra UVs / morphs, while a standard .psk keeps only points, faces, materials, bones and weights)",
         "tab_output": "Output",
+        "opt_subfolder": "Write into a same-named subfolder (name_date_001)",
         "zoom_auto": "Auto (follow system)",
         "msg_title": "Note",
         "msg_pick": "Please drop .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx files into the window, or click the drop area to pick files.",
@@ -526,6 +559,8 @@ LANG = {
         "task_uemodel2pmx": "uemodel → PMX",
         "task_pmx2uemodel": "PMX → uemodel",
         "task_psk2pmx": "psk / pskx → PMX",
+        "task_pmx2fbx": "PMX → FBX",
+        "task_pmx2psk": "PMX → psk / pskx",
         "task_check": "PMX 検証＋プレビューのみ",
         "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM　·　.uemodel → PMX　·　.psk/.pskx → PMX",
         "hint_fbx2pmx": "FBX / unitypackage を MMD の PMX に変換",
@@ -534,6 +569,8 @@ LANG = {
         "hint_uemodel2pmx": "UEFormat(.uemodel) を MMD の PMX に変換（テクスチャは同フォルダの MI_*.json から関連付け）",
         "hint_pmx2uemodel": "PMX を UEFormat(.uemodel) に変換（FortnitePorting / UE プラグイン向け）",
         "hint_psk2pmx": "Unreal ActorX の .psk / .pskx を MMD の PMX に変換（ボーンは日本語標準名・表情付き）",
+        "hint_pmx2fbx": "PMX を ASCII FBX 7.4 に変換（テクスチャは textures/… の相対参照）",
+        "hint_pmx2psk": "PMX を Unreal ActorX の .psk / .pskx に変換（ボーンは英語名、表情と追加 UV 付き）",
         "hint_check": "PMX を読むだけで構造検証とプレビュー、出力はしません",
         "scale": "倍率",
         "scale_auto": "自動",
@@ -619,8 +656,14 @@ LANG = {
         "opt_psk_morphs": "表情を書き出す（MRPH の頂点移動 → PMX 表情）",
         "opt_psk_fbx": "psk / pskx → PMX のときに FBX も同時出力",
         "opt_psk_alpha": "PMX 出力時にテクスチャのアルファを外す（UE の alpha はデータマスクのことが多い）",
-        "note_psk": "（.psk / .pskx は Unreal の ActorX 交換形式で、FModel / UEViewer が UE アセットから書き出します。MMD の Y-up に自動で軸変換し、身長は 20 単位に正規化、テクスチャはマテリアル名と同名の画像をソースと同じフォルダから探します）",
+        "psk_out": "PMX → psk の出力形式",
+        "psk_out_pskx": "pskx（法線/頂点色/追加UV/表情つき）",
+        "psk_out_psk": "psk（標準チャンクのみ）",
+        "opt_psk_height": "PSK の目標身長",
+        "opt_psk_tex": "PMX → psk のときテクスチャを textures フォルダへ書き出す",
+        "note_psk": "（.psk / .pskx は Unreal の ActorX 交換形式で、FModel / UEViewer が UE アセットから書き出します。psk→PMX は MMD の Y-up に軸変換し身長を 20 単位に正規化、テクスチャはマテリアル名と同名の画像をソースと同じフォルダから探します。PMX→psk は逆向きに同じ軸変換をもう一度かけ、上の身長（cm）に換算します。.pskx は法線/頂点色/追加 UV/表情チャンクを持つ拡張版で、標準 .psk は頂点・面・マテリアル・ボーン・ウェイトだけです）",
         "tab_output": "出力",
+        "opt_subfolder": "同名のサブフォルダに出力（ファイル名_日付_連番）",
         "zoom_auto": "自動（システムに合わせる）",
         "msg_title": "注意",
         "msg_pick": ".fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx ファイルをウィンドウへドロップするか、ドロップ領域をクリックして選択してください。",
@@ -659,6 +702,23 @@ def t(key, **kw):
     return s
 
 
+# ---- PMX → psk 输出格式两档：值用内部代号，界面显示本地化文案 ----
+# （放在 refresh_choices 之前：它在模块加载时就会被调用一次。）
+PSK_OUT_CODES = ("pskx", "psk")
+PSK_OUTS = []                       # 由 refresh_choices() 按当前语言填
+
+
+def psk_out_label(code):
+    return t("psk_out_" + code)
+
+
+def psk_out_code_of(label, default="pskx"):
+    for c in PSK_OUT_CODES:
+        if psk_out_label(c) == label:
+            return c
+    return default
+
+
 # 任务 / 缩放 等下拉选项随语言变化，集中刷新
 TASK_CHOICES = []
 TASK_BY_LABEL = {}
@@ -669,6 +729,7 @@ ZOOM_BY_LABEL = {}
 
 def refresh_choices():
     global TASK_CHOICES, TASK_BY_LABEL, TASK_LABELS, ZOOM_CHOICES, ZOOM_BY_LABEL
+    global PSK_OUTS
     TASK_CHOICES = [(t("task_auto"), "auto"),
                     (t("task_fbx2pmx"), "fbx2pmx"),
                     (t("task_vrm2pmx"), "vrm2pmx"),
@@ -676,12 +737,15 @@ def refresh_choices():
                     (t("task_uemodel2pmx"), "uemodel2pmx"),
                     (t("task_pmx2uemodel"), "pmx2uemodel"),
                     (t("task_psk2pmx"), "psk2pmx"),
+                    (t("task_pmx2fbx"), "pmx2fbx"),
+                    (t("task_pmx2psk"), "pmx2psk"),
                     (t("task_check"), "check")]
     TASK_BY_LABEL = dict(TASK_CHOICES)
     TASK_LABELS = [lbl for lbl, _ in TASK_CHOICES]
     ZOOM_CHOICES = [(t("zoom_auto"), None), ("100%", 1.0), ("125%", 1.25),
                     ("150%", 1.5), ("175%", 1.75), ("200%", 2.0), ("250%", 2.5)]
     ZOOM_BY_LABEL = dict(ZOOM_CHOICES)
+    PSK_OUTS = [psk_out_label(c) for c in PSK_OUT_CODES]
 
 
 refresh_choices()
@@ -1123,6 +1187,11 @@ class ConverterApp:
         self.var_psk_morphs = tk.BooleanVar(value=True)
         self.var_psk_fbx = tk.BooleanVar(value=False)
         self.var_psk_alpha = tk.BooleanVar(value=True)
+        # PMX → psk / pskx
+        self.var_psk_out = tk.StringVar(value=PSK_OUTS[0])
+        self.var_psk_height = tk.StringVar(value="160")
+        self.var_psk_tex = tk.BooleanVar(value=True)
+        self.var_subfolder = tk.BooleanVar(value=True)
         self._task_code = "auto"             # 任务方向内部代号（与语言无关）
         self.var_lang = tk.StringVar(value="zh_CN")
         self.zoom = None                      # None = 跟随系统 DPI
@@ -1428,6 +1497,26 @@ class ConverterApp:
         self._bigcheck(tab_p, t("opt_psk_morphs"), self.var_psk_morphs)
         self._bigcheck(tab_p, t("opt_psk_fbx"), self.var_psk_fbx)
         self._bigcheck(tab_p, t("opt_psk_alpha"), self.var_psk_alpha)
+        # PMX → psk / pskx 的反向选项
+        rowp = tk.Frame(tab_p, bg=CARD)
+        rowp.pack(fill="x", padx=px(14), pady=(px(6), 0))
+        tk.Label(rowp, text=t("psk_out"), font=F_BODY, bg=CARD,
+                 fg=TXT).pack(side="left", padx=(0, px(8)))
+        self.om_psk_out = tk.OptionMenu(rowp, self.var_psk_out, *PSK_OUTS)
+        self._style_om(self.om_psk_out, width=22)
+        self.om_psk_out.pack(side="left")
+        rowh = tk.Frame(tab_p, bg=CARD)
+        rowh.pack(fill="x", padx=px(14), pady=(px(4), 0))
+        tk.Label(rowh, text=t("opt_psk_height"), font=F_BODY, bg=CARD,
+                 fg=TXT).pack(side="left")
+        self.ent_psk_h = tk.Entry(rowh, textvariable=self.var_psk_height,
+                                  width=7, font=F_BODY, bg=CARD, fg=TXT,
+                                  relief="solid", bd=1, justify="center",
+                                  highlightthickness=0, insertbackground=TXT)
+        self.ent_psk_h.pack(side="left", padx=(px(8), 0))
+        tk.Label(rowh, text=t("unit_cm"), font=F_SUB, bg=CARD,
+                 fg=MUTED).pack(side="left", padx=(px(4), 0))
+        self._bigcheck(tab_p, t("opt_psk_tex"), self.var_psk_tex)
         self.lbl_psk_note = tk.Label(tab_p, text=t("note_psk"), font=F_SUB,
                                      bg=CARD, fg=MUTED, justify="left",
                                      anchor="w")
@@ -1438,6 +1527,7 @@ class ConverterApp:
 
         # 输出
         tab_o = self._tab(nb, t("tab_output"))
+        self._bigcheck(tab_o, t("opt_subfolder"), self.var_subfolder)
         self._bigcheck(tab_o, t("opt_samedir"), self.var_same_dir,
                        command=self._toggle_outdir)
         rowo = tk.Frame(tab_o, bg=CARD)
@@ -1821,6 +1911,7 @@ class ConverterApp:
             return
         # OptionMenu 存的是本地化文案，切语言前先换算回内部代号，切完再按新文案写回
         _acode = alpha_code_of(self.var_alpha_mode.get())
+        _pcode = psk_out_code_of(self.var_psk_out.get())
         APP_LANG = code
         refresh_choices()
         try:
@@ -1829,6 +1920,10 @@ class ConverterApp:
             pass
         try:
             self.var_alpha_mode.set(alpha_label(_acode))
+        except Exception:
+            pass
+        try:
+            self.var_psk_out.set(psk_out_label(_pcode))
         except Exception:
             pass
         self._save_settings()
@@ -1850,6 +1945,8 @@ class ConverterApp:
             "uemodel2pmx": t("hint_uemodel2pmx"),
             "pmx2uemodel": t("hint_pmx2uemodel"),
             "psk2pmx": t("hint_psk2pmx"),
+            "pmx2fbx": t("hint_pmx2fbx"),
+            "pmx2psk": t("hint_pmx2psk"),
             "check": t("hint_check"),
         }
         if getattr(self, "lbl_hint", None) is not None:
@@ -1962,6 +2059,12 @@ class ConverterApp:
             self.var_psk_morphs.set(bool(s.get("psk_morphs", True)))
             self.var_psk_fbx.set(bool(s.get("psk_fbx", False)))
             self.var_psk_alpha.set(bool(s.get("psk_alpha", True)))
+            self.var_psk_out.set(psk_out_label(
+                s.get("psk_out", "pskx")) if s.get("psk_out") in PSK_OUT_CODES
+                else PSK_OUTS[0])
+            self.var_psk_height.set(s.get("psk_height", "160"))
+            self.var_psk_tex.set(bool(s.get("psk_tex", True)))
+            self.var_subfolder.set(bool(s.get("subfolder", True)))
             code = s.get("task", "auto")
             if code not in {c for _, c in TASK_CHOICES}:
                 code = TASK_BY_LABEL.get(code, "auto")  # 兼容旧版以标签存储的设置
@@ -2012,7 +2115,11 @@ class ConverterApp:
                            "psk_ik": self.var_psk_ik.get(),
                            "psk_morphs": self.var_psk_morphs.get(),
                            "psk_fbx": self.var_psk_fbx.get(),
-                           "psk_alpha": self.var_psk_alpha.get(),
+                           "psk_alpha": bool(self.var_psk_alpha.get()),
+                           "psk_out": psk_out_code_of(self.var_psk_out.get()),
+                           "psk_height": self.var_psk_height.get(),
+                           "psk_tex": bool(self.var_psk_tex.get()),
+                           "subfolder": bool(self.var_subfolder.get()),
                            "split": getattr(self, "_split", 0.6),
                            "vsplit": getattr(self, "_vsplit", None)},
                           f, ensure_ascii=False, indent=2)
@@ -2184,6 +2291,8 @@ class ConverterApp:
                 "uemodel2pmx": ("uemodel",),
                 "pmx2uemodel": ("pmx",),
                 "psk2pmx": ("psk",),
+                "pmx2fbx": ("pmx",),
+                "pmx2psk": ("pmx",),
                 "check": ("pmx",)}[task]
         keep = [f for f in files if classify(f) in want]
         if not keep and notify:
@@ -2410,11 +2519,15 @@ class ConverterApp:
             "ue_fbx": bool(self.var_ue_fbx.get()),
             "ue_alpha": bool(self.var_ue_alpha.get()),
             "ue_height": self.var_ue_height.get(),
+            "subfolder": bool(self.var_subfolder.get()),
             "psk_jp": bool(self.var_psk_jp.get()),
             "psk_ik": bool(self.var_psk_ik.get()),
             "psk_morphs": bool(self.var_psk_morphs.get()),
             "psk_fbx": bool(self.var_psk_fbx.get()),
             "psk_alpha": bool(self.var_psk_alpha.get()),
+            "psk_out": psk_out_code_of(self.var_psk_out.get()),
+            "psk_height": self.var_psk_height.get(),
+            "psk_tex": bool(self.var_psk_tex.get()),
         }
 
     def _run(self, files):
@@ -2477,6 +2590,13 @@ class ConverterApp:
             q.put(("log", "无法创建输出目录 %s：%s" % (folder, e), "err"))
             return []
 
+        # 「输出到同名子文件夹」：每次转换单独一个 <文件名>_<日期>_<序号> 目录，
+        # 重复转换不会互相覆盖（纯校验任务不建目录）。
+        if cfg.get("subfolder", True) and task != "check":
+            stem = os.path.splitext(os.path.basename(path))[0]
+            folder = self._out_folder(folder, stem)
+            q.put(("log", "输出目录：%s" % folder, "info"))
+
         if task == "check":
             q.put(("log", ""))
             q.put(("log", "→ %s（仅校验）" % os.path.basename(path), "head"))
@@ -2498,7 +2618,75 @@ class ConverterApp:
         if task == "psk2pmx":
             return self._do_psk2pmx(path, folder, cfg)
 
+        if task == "pmx2fbx":
+            return self._do_pmx2fbx(path, folder, cfg)
+
+        if task == "pmx2psk":
+            return self._do_pmx2psk(path, folder, cfg)
+
         return self._do_fbx2pmx(path, kind, folder, cfg)
+
+    # -- 输出目录：同名子文件夹（文件名_日期_序号）--------------------------
+    def _out_folder(self, base, stem):
+        """在 base 下建 <stem>_<YYYYMMDD>_<NNN> 并返回（重名就往后 +1）。
+
+        用户要求：重复转换同一文件时不要互相覆盖，每次都落到新编号的目录里。
+        例：R2T1AimisiMd10011.pskx → R2T1AimisiMd10011_20260101_001
+            再转一次                  → R2T1AimisiMd10011_20260101_002
+        """
+        day = time.strftime("%Y%m%d")
+        n = 1
+        while n < 10000:
+            d = os.path.join(base, "%s_%s_%03d" % (stem, day, n))
+            if not os.path.exists(d):
+                try:
+                    os.makedirs(d)
+                except OSError:
+                    pass
+                return d
+            n += 1
+        return base
+
+    # -- PMX → FBX ---------------------------------------------------------
+    def _do_pmx2fbx(self, path, folder, cfg):
+        q = self.q
+        stem = os.path.splitext(os.path.basename(path))[0]
+        out = os.path.join(folder, stem + ".fbx")
+        q.put(("log", ""))
+        q.put(("log", "→ %s" % os.path.basename(path), "head"))
+        q.put(("log", "读取 PMX…", "info"))
+        st = fbxout.export_pmx(path, out, log=self._logfn())
+        q.put(("log", "已写出 %s（%s）"
+               % (os.path.basename(out), human(st["bytes"])), "ok"))
+        # 预览用源 PMX 渲染（FBX 没有渲染器）
+        self._report(path, os.path.dirname(os.path.abspath(path)), cfg)
+        return [out]
+
+    # -- PMX → psk / pskx --------------------------------------------------
+    def _do_pmx2psk(self, path, folder, cfg):
+        q = self.q
+        stem = os.path.splitext(os.path.basename(path))[0]
+        ext = ".psk" if cfg.get("psk_out", "pskx") == "psk" else ".pskx"
+        out = os.path.join(folder, stem + ext)
+        try:
+            height = float((cfg.get("psk_height") or "160").strip())
+        except (TypeError, ValueError, AttributeError):
+            height = 160.0
+        if not (1.0 < height < 10000.0):
+            q.put(("log", "身高取值不合理（%s），按 160cm 处理" % height, "warn"))
+            height = 160.0
+        q.put(("log", ""))
+        q.put(("log", "→ %s" % os.path.basename(path), "head"))
+        q.put(("log", "读取 PMX…", "info"))
+        st = pmx2psk.convert(path, out, scale_mode="psk", height=height,
+                             log=self._logfn(), name=stem,
+                             pskx=(ext == ".pskx"),
+                             export_textures=cfg.get("psk_tex", True))
+        q.put(("log", "已写出 %s（%s）"
+               % (os.path.basename(out), human(st["bytes"])), "ok"))
+        # 预览用源 PMX 渲染（PSK 侧用回读的网格也可，但源 PMX 信息最全）
+        self._report(path, os.path.dirname(os.path.abspath(path)), cfg)
+        return [out]
 
     # -- VRM → PMX ---------------------------------------------------------
     def _do_vrm2pmx(self, path, folder, cfg):

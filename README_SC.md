@@ -24,6 +24,8 @@
 | uemodel（UEFormat） → PMX | 读公开的 UEFormat `.uemodel`（v1–v10）；可同时导出一份 ASCII FBX |
 | PMX → uemodel（UEFormat） | 写出 UEFormat `.uemodel`（默认 v9，可选 v10），可交给 UE / FModel 生态 |
 | PSK / PSKX（Unreal ActorX） → PMX | 读 Unreal 的 `.psk`（`FACE0000`）/ `.pskx`（`FACE3200`），带顶点权重、MRPH 顶点表情、附加 UV |
+| PMX → FBX | 写出 ASCII FBX 7.4（含骨骼、权重、表情 Shape、贴图相对引用 textures/…） |
+| PMX → psk / pskx | 写出 Unreal ActorX 格式（含法线/附加UV/表情等扩展块可选） |
 | PMX → 仅校验 + 预览 | 只读结构校验，不输出文件 |
 
 ### 核心特性
@@ -40,14 +42,19 @@
   也就是 MMD 里的「不使用 toon」。
 - **多语言界面**：右上角可切换 简体中文 / 繁體中文 / English / 日本語，选择记忆到配置。
 - **高分屏友好**：按系统 DPI 自动缩放，右上角「界面缩放」可手动指定倍率。
-- **分页式选项**：选项区按「通用 / FBX / VRM / UE / 输出」分为五个标签页，易于扩展。
+- **输出到同名子文件夹**：默认创建 `<文件名>_<日期>_<序号>` 子目录（如 `R2T1AimisiMd10011_20260101_001`），重复转换不会覆盖旧文件；可在「输出」页签关闭。
+- **分页式选项**：选项区按「通用 / FBX / VRM / UE / PSK / 输出」分为六个标签页，易于扩展。
 - **自动绕序判定**：三角形绕序用「几何面法线 vs 顶点法线」投票自动判定，
   避免出现大面积镂空 / 轮廓线糊成黑块。
 - **贴图处理**：PNG/JPEG 直接透传，BMP/TGA 现转 PNG，嵌入 GLB 或导出到 PMX 同目录。
-- **PSK / PSKX 直读**：Unreal ActorX 的 `.psk`（`FACE0000`）与 `.pskx`（`FACE3200`）都能读，
-  顶点权重、MRPH 顶点表情、`EXTRAUVS*` 附加 UV 一并带过来；Bip001 这套 3dsMax Biped
-  骨名自动映射成 MMD 标准日文名（`センター` / `上半身` / `左足ＩＫ` …），
+- **PSK / PSKX 双向**：可以读也可以写。读时支持 `.psk`（`FACE0000`）与 `.pskx`
+  （`FACE3200`），顶点权重、MRPH 顶点表情、`EXTRAUVS*` 附加 UV 一并带过来；
+  写时可以选择标准 `.psk`（只含顶点/面/材质/骨骼/权重）或扩展 `.pskx`
+  （再加法线、顶点色、附加 UV、表情）。Bip001 这套 3dsMax Biped 骨名自动映射成
+  MMD 标准日文名（`センター` / `上半身` / `左足ＩＫ` …），
   **英文原名写进骨骼的英文名备注字段**，两边都不丢。
+  反过来 PMX→psk 也做了日文名→英文名的兜底表（`全ての親` → `Root`、`センター` →
+  `Center` …），转出去的骨骼名不会被改成乱码。
 
 ---
 
@@ -83,6 +90,7 @@ Model-to-PMX/
 │   ├── pmx2vrm.py               #   PMX → VRM
 │   ├── uemodel2pmx.py           #   uemodel（UEFormat）→ PMX（可同时导出 FBX）
 │   ├── pmx2uemodel.py           #   PMX → uemodel（UEFormat）
+│   ├── pmx2psk.py               #   PMX → psk / pskx（Unreal ActorX）
 │   ├── psk2pmx.py               #   PSK / PSKX（Unreal ActorX）→ PMX
 │   └── pmx_check.py             #   PMX 校验 + 软件渲染预览图
 │
@@ -189,6 +197,15 @@ python convert/pmx2uemodel.py "model.pmx" -o "model.uemodel" --version 10
 python convert/psk2pmx.py "model.psk" -o "model.pmx"
 python convert/psk2pmx.py "model.pskx" -o "model.pmx" --raw-bone-names --no-ik
 
+# PMX → FBX（ASCII 7.4，含骨骼/权重/表情/贴图引用）
+python convert/fbxout.py "model.pmx" -o "model.fbx"
+
+# PMX → pskx（默认 pskx，含法线/附加 UV/表情；默认目标身高 160cm）
+python convert/pmx2psk.py "model.pmx" -o "model.pskx"
+
+# PMX → psk（只写标准块，去掉法线/表情等）
+python convert/pmx2psk.py "model.pmx" -o "model.psk" --std
+
 # PMX 校验 + 生成预览图
 python convert/pmx_check.py "model.pmx"
 python convert/pmx_check.py "model.pmx" --bones   # 叠加骨骼位置
@@ -232,6 +249,20 @@ python formats/pmxio.py "model.pmx" --in-place    # 直接覆盖（建议先备�
 
 `vrm2pmx.py`：`--scale`、`--rotate`、`--flip-winding`、`--edge`（开启轮廓线）、
 `--force-double-sided`、`--name`。
+
+`pmx2psk.py`：
+
+| 参数 | 说明 |
+|---|---|
+| `-o` | 输出路径（默认同目录 `.pskx`） |
+| `--std` | 只写标准 `.psk`（不带法线 / 附加 UV / 表情） |
+| `--pskx` | 强制写扩展块（默认按扩展名自动判断） |
+| `--scale` | `psk`（按身高归一到目标厘米）/ `keep` / 数值倍数 |
+| `--height` | 目标身高 cm（默认 160） |
+| `--flip` | 反转三角绕序（默认不反转） |
+| `--no-morph` | 不写顶点表情 |
+| `--no-add-uv` | 不写附加 UV |
+| `--no-textures` | 不导出贴图到 `textures/` |
 
 `psk2pmx.py`：
 
@@ -368,10 +399,19 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 - **骨骼名**：FBX 转换保留英文骨骼名（`Hips`、`Spine` …），直接套 MMD 现成动作（.vmd）匹配不上，需在 PMXEditor 里批量改为日文标准名。
   PSK 走的是另一条路：Bip001 那套 3dsMax Biped 命名**默认就转成 MMD 标准日文名**，英文原名写进骨骼的英文名备注。
 - **表情**：源模型没有 BlendShape / morph 时，PMX 表情也为 0，需手工建。
-- **PSK 只支持单向**：`.psk` / `.pskx` 只能转成 PMX，不支持反向导出。
 - **PSK 的坐标系是固定映射**：Unreal 的 PSK 是「`+X` 左手、`-Y` 正面、`+Z` 上」，
   PMX 是「`+X` 左手、`-Z` 正面、`+Y` 上」，两者手性相反，所以换轴必须做**一次反射**
   （`(x, y, z) → (x, z, y)`）。这一步是写死的，没有 FBX 那样的「自动判定朝向」开关。
+- **PSK / PSKX 双向的已知限制**：
+  - PMX→psk 时，日文骨骼名优先取 `name_en`，没有则查兜底表（`全ての親` → `Root` 等），
+    兜底也找不到就回退到 `bone%03d`（罕见）。
+  - PMX 的 IK / 付与(继承) / 刚体 / 关节 / UV 表情 / 材质表情在 PSK 里没有对应结构，
+    一律跳过（日志会计数）。
+  - PSK 名字字段是纯 ASCII 定长，写不进日文，所以反向（PMX→psk）也丢不了日文名，
+    因为根本塞不进去；但 psk2pmx 那边已经做了 Bip001 → MMD 日文名的映射，
+    所以整条链「PSK→PMX→PSK」的英文骨名是能原样回来的。
+  - PMX 顶点最多 4 根骨骼权重，若源 PSK 有 5~6 根，转一圈回来会丢（实测 Aimisi 从
+    177880 条权重降到 176071 条）。
 - **`.psk` 的扩展名冲突**：PmxEditor 用 `.psk` 存它的「锚点数据」，和 Unreal 的网格同名。
   详见上面「PmxEditor 报 アンカーデータの読み込みに失敗しました」一节。
 

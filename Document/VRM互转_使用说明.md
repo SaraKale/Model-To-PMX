@@ -12,6 +12,7 @@
 | `formats/vrmio.py` | GLB/glTF 容器读写 + PNG 编码 + BMP/TGA 解码 |
 | `convert/pmx2vrm.py` | **PMX → VRM（1.0 / 0.x）** |
 | `convert/vrm2pmx.py` | **VRM（1.0 / 0.x）→ PMX** |
+| `gfx/preview.py` | 实时 3D 正面预览控件（GUI 调用） |
 
 ## 常用命令
 
@@ -112,7 +113,7 @@ VRM 1.0 有 15 根**必需**骨骼，缺哪根会自动生成 `vrm_xxx` 占位�
 | skin joints | 骨骼（按 DFS 重排，父在前；humanoid 里登记但未蒙皮的骨骼也会保留） |
 | 节点世界平移 | 骨骼位置（`tail` 指向第一个子骨骼，叶子骨骼按父子方向给偏移） |
 | JOINTS_0/WEIGHTS_0 | BDEF1 / BDEF2 / BDEF4 |
-| glTF 材质 | PMX 材质（diffuse 取 `baseColorFactor`，toon 用内置 toon01） |
+| glTF 材质 | PMX 材质（diffuse 取 `baseColorFactor`，**不使用 toon**：`toon_flag=0` + `toon=-1`） |
 | 嵌入贴图 | 导出成 `<pmx名>_texNN.png` 放在 PMX 同目录 |
 | expression / blendShape | PMX 顶点表情（组表情会按权重叠加展开） |
 | `extras.targetNames` 里没被引用的 target | 也会单独建一个 PMX 表情 |
@@ -124,6 +125,19 @@ VRM 1.0 有 15 根**必需**骨骼，缺哪根会自动生成 `vrm_xxx` 占位�
    SpringBone / node constraint 也不会转成 PMX 刚体。
 3. **材质效果**：球谐贴图（.sph/.spa）、toon 贴图在 VRM 侧不保留；
    MToon 的高级参数只有 0.x 会写一份默认值，1.0 用的是标准 PBR。
+   反方向（VRM → PMX）本工具**一律不使用 Toon**，材质写成 `toon_flag=0` + `toon=-1`
+   （PMXEditor / MMD 里显示为「なし」）。
+
+   ⚠️ 顺便记一个坑：PMX 材质的 toon 字段宽度由「共有Toonフラグ」决定，写反了会给每个材质
+   硬套一层 `toon01.bmp`：
+
+   | flag | 含义 | 字段 |
+   |---|---|---|
+   | `1` | 共享 / 内建 toon | **1 字节编号**，引用 MMD 的 `Data/toon01.bmp` … `toon10.bmp`，**编号 0 就是 `toon01.bmp`** |
+   | `0` | 本模型纹理表里的贴图 | 纹理索引宽度，**`-1` = なし（不使用）** |
+
+   「编号 0 = `toon00.bmp` = 不使用」是误解 —— MMD 的 `Data/` 目录里没有 `toon00.bmp`，
+   mmd_tools 源码里写死了 `toon%02d.bmp % (shared + 1)`。本工具 2026-09-24 之前就是错的那个写法。
 4. **骨骼表情**：PMX 的骨骼表情（kind 2）在 VRM 里没有对应物，会被忽略。
 5. **体型差异**：VRM 要求 T-pose，MMD 模型多是微微 A-pose 的直臂，
    导入动作重定向软件时可能需要手动调一下手臂角度。

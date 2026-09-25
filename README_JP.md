@@ -25,6 +25,8 @@ Blender / Autodesk FBX SDK / Unity 3D は不要、mmd_tools / UniVRM といっ�
 | uemodel（UEFormat） → PMX | 公開仕様 UEFormat の `.uemodel`（v1–v10）を読み込み。同じ実行で ASCII FBX も書き出し可能 |
 | PMX → uemodel（UEFormat） | UEFormat `.uemodel`（既定 v9、v10 も指定可）を書き出し。UE / FModel エコシステムへ |
 | PSK / PSKX（Unreal ActorX） → PMX | Unreal の `.psk`（`FACE0000`）/ `.pskx`（`FACE3200`）を読み込み。頂点ウェイト・MRPH 頂点モーフ・追加 UV に対応 |
+| PMX → FBX | ASCII FBX 7.4 を書き出し（ボーン・ウェイト・BlendShape・相対テクスチャパス） |
+| PMX → psk / pskx | Unreal ActorX 形式を書き出し；`.pskx` は法線/頂点色/追加 UV/表情付き、`.psk` は標準チャンクのみ |
 | PMX → 検証 + プレビューのみ | 構造の読み取り専用検証、ファイルは出力しない |
 
 ### コア機能
@@ -86,6 +88,7 @@ Model-to-PMX/
 │   ├── pmx2vrm.py               #   PMX → VRM
 │   ├── uemodel2pmx.py           #   uemodel（UEFormat）→ PMX（FBX 同時出力可）
 │   ├── pmx2uemodel.py           #   PMX → uemodel（UEFormat）
+│   ├── pmx2psk.py               #   PMX → psk / pskx（Unreal ActorX）
 │   ├── psk2pmx.py               #   PSK / PSKX（Unreal ActorX）→ PMX
 │   └── pmx_check.py             #   PMX 検証 + ソフトウェア描画のプレビュー画像
 │
@@ -202,6 +205,15 @@ python convert/pmx2uemodel.py "model.pmx" -o "model.uemodel" --version 10
 # テクスチャは材質名からソースフォルダ内を自動検索
 python convert/psk2pmx.py "model.psk" -o "model.pmx"
 python convert/psk2pmx.py "model.pskx" -o "model.pmx" --raw-bone-names --no-ik
+
+# PMX → FBX（ASCII 7.4、ボーン/ウェイト/BlendShape/相対テクスチャパス）
+python convert/fbxout.py "model.pmx" -o "model.fbx"
+
+# PMX → pskx（既定 pskx、法線/追加 UV/表情付き；既定目標身長 160cm）
+python convert/pmx2psk.py "model.pmx" -o "model.pskx"
+
+# PMX → psk（標準チャンクのみ、法線/表情なし）
+python convert/pmx2psk.py "model.pmx" -o "model.psk" --std
 
 # PMX 検証 + プレビュー画像生成
 python convert/pmx_check.py "model.pmx"
@@ -385,7 +397,13 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 - **ボーン名**：FBX 変換は英語ボーン名（`Hips`、`Spine` …）を維持するため、MMD の既存モーション（.vmd）と一致せず、PMXEditor で日本語標準名へ一括変更が必要。
   PSK は別ルートです。Bip001（3ds Max Biped）の命名は**既定で MMD 標準の日本語名に変換**され、元の英語名はボーンの英語名フィールドに残ります。
 - **表情**：ソースモデルに BlendShape / morph がない場合、PMX の表情も 0 となり、手作業での作成が必要。
-- **PSK は片方向のみ**：`.psk` / `.pskx` は PMX へ変換できるだけで、逆方向の書き出しには対応していません。
+- **PSK / PSKX 双方向の既知の制約**：
+  - PMX→psk では日本語ボーン名は `name_en` を優先的に使用し、ない場合はフォールバック表
+    （`全ての親` → `Root` など）を参照し、それもなければ `bone%03d` になります。
+  - PMX の IK / 付与 / 剛体 / Joint / UV モーフ / マテリアルモーフは PSK に対応する構造が
+    ないためスキップされます（ログで件数を出力）。
+  - PMX は頂点あたり最大 4 本のボーンウェイトです。元の PSK が 5～6 本ある場合、
+    往復で失われます（実測：Aimisi は 177880 → 176071 本）。
 - **PSK の座標系は固定マッピング**：Unreal の PSK は「`+X` 左手・`-Y` 正面・`+Z` 上」、PMX は
   「`+X` 左手・`-Z` 正面・`+Y` 上」で、右手系と左手系が逆です。そのため軸の入れ替えには**1 回の反転**が必要で、
   本ツールは `(x, y, z) → (x, z, y)` を使っています。これは固定で、FBX のような「向きの自動判定」スイッチはありません。

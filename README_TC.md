@@ -24,6 +24,8 @@
 | uemodel（UEFormat） → PMX | 讀公開的 UEFormat `.uemodel`（v1–v10）；可同時匯出一份 ASCII FBX |
 | PMX → uemodel（UEFormat） | 寫出 UEFormat `.uemodel`（預設 v9，可選 v10），可交給 UE / FModel 生態 |
 | PSK / PSKX（Unreal ActorX） → PMX | 讀 Unreal 的 `.psk`（`FACE0000`）/ `.pskx`（`FACE3200`），帶頂點權重、MRPH 頂點表情、附加 UV |
+| PMX → FBX | 寫出 ASCII FBX 7.4（含骨骼、權重、表情 Shape、貼圖相對路徑） |
+| PMX → psk / pskx | 寫出 Unreal ActorX 格式；`.pskx` 帶法線/頂點色/附加 UV/表情，`.psk` 僅標準區塊 |
 | PMX → 僅校驗 + 預覽 | 唯讀結構校驗，不輸出檔案 |
 
 ### 核心特性
@@ -83,6 +85,7 @@ Model-to-PMX/
 │   ├── pmx2vrm.py               #   PMX → VRM
 │   ├── uemodel2pmx.py           #   uemodel（UEFormat）→ PMX（可同時匯出 FBX）
 │   ├── pmx2uemodel.py           #   PMX → uemodel（UEFormat）
+│   ├── pmx2psk.py               #   PMX → psk / pskx（Unreal ActorX）
 │   ├── psk2pmx.py               #   PSK / PSKX（Unreal ActorX）→ PMX
 │   └── pmx_check.py             #   PMX 校驗 + 軟體渲染預覽圖
 │
@@ -188,6 +191,15 @@ python convert/pmx2uemodel.py "model.pmx" -o "model.uemodel" --version 10
 # 骨名預設轉成 MMD 標準日文名（英文原名寫進英文名備註）；貼圖依材質名在源目錄自動尋找
 python convert/psk2pmx.py "model.psk" -o "model.pmx"
 python convert/psk2pmx.py "model.pskx" -o "model.pmx" --raw-bone-names --no-ik
+
+# PMX → FBX（ASCII 7.4，含骨骼/權重/表情/貼圖相對路徑）
+python convert/fbxout.py "model.pmx" -o "model.fbx"
+
+# PMX → pskx（預設 pskx，含法線/附加 UV/表情；預設目標身高 160cm）
+python convert/pmx2psk.py "model.pmx" -o "model.pskx"
+
+# PMX → psk（只寫標準區塊，去掉法線/表情等）
+python convert/pmx2psk.py "model.pmx" -o "model.psk" --std
 
 # PMX 校驗 + 產生預覽圖
 python convert/pmx_check.py "model.pmx"
@@ -368,7 +380,12 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 - **骨骼名**：FBX 轉換保留英文骨骼名（`Hips`、`Spine` …），直接套 MMD 現成動作（.vmd）匹配不上，需在 PMXEditor 裡批次改為日文標準名。
   PSK 走的是另一條路：Bip001 那套 3dsMax Biped 命名**預設就轉成 MMD 標準日文名**，英文原名寫進骨骼的英文名備註。
 - **表情**：源模型沒有 BlendShape / morph 時，PMX 表情也為 0，需手工建。
-- **PSK 只支援單向**：`.psk` / `.pskx` 只能轉成 PMX，不支援反向匯出。
+- **PSK / PSKX 雙向的已知限制**：
+  - PMX→psk 時日文骨骼名優先取 `name_en`，沒有則查兜底表（`全ての親` → `Root` 等），
+    兜底也找不到就回退到 `bone%03d`。
+  - PMX 的 IK / 付與(繼承) / 剛體 / 關節 / UV 表情 / 材質表情在 PSK 裡沒有對應結構，
+    一律跳過（日誌會計數）。
+  - PMX 頂點最多 4 根骨骼權重，若源 PSK 有 5~6 根，轉一圈回來會丟。
 - **PSK 的座標系是固定映射**：Unreal 的 PSK 是「`+X` 左手、`-Y` 正面、`+Z` 上」，
   PMX 是「`+X` 左手、`-Z` 正面、`+Y` 上」，兩者手性相反，所以換軸必須做**一次反射**
   （`(x, y, z) → (x, z, y)`）。這一步是寫死的，沒有 FBX 那樣的「自動判定朝向」開關。
