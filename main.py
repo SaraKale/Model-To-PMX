@@ -227,6 +227,12 @@ LANG = {
         "tab_ue": "UE 选项",
         "opt_ue_fbx": "uemodel → PMX 时同时导出 FBX 文件",
         "opt_ue_alpha": "导出 PMX 时去除贴图透明通道（UE 贴图 alpha 常是数据遮罩）",
+        "opt_ue_align": "自动对齐到参考模型（部件放回正确位置）",
+        "opt_ue_align_pick": "选择参考模型…",
+        "opt_ue_align_none": "未选择（按各自原点导出）",
+        "opt_ue_align_wait": "先用「选择参考模型」指定整身 .uemodel",
+        "note_ue_align": "（UEFormat 常把一个角色拆成多个 .uemodel：身体 / 头发+皮肤 / 服装…。部件文件自带的 *_adjust 骨指向它在整身上的挂点，勾选后会按这些骨自动求出平移，把它放回正确位置并共用同一套居中基准 —— 不勾则每个文件各自居中，叠进同一场景会互相错位）",
+        "msg_ue_align_weak_ref": "「{name}」看起来不是整身模型（骨架只铺开 {spread} cm，整身通常 120 cm 以上）。\n\n对齐是单向的：应该拿「整身」当参考、把「部件」对齐过去。选反了会把整身搬进部件的局部空间，整个模型会整体偏移。\n\n已自动取消勾选对齐。请改选整身（身体）那个 .uemodel。",
         "opt_ue_height": "PMX → uemodel 身高",
         "unit_cm": "厘米",
         "note_ue": "（.uemodel 是 UEFormat 公开交换格式：FortnitePorting / FModel 等从 UE 资源导出的中间文件；两个方向都会自动换轴，PMX→UE 默认按身高折算成厘米，也可用上面的缩放选「原始尺寸」保持 1:1）",
@@ -367,6 +373,12 @@ LANG = {
         "tab_ue": "UE 選項",
         "opt_ue_fbx": "uemodel → PMX 時同時匯出 FBX 檔案",
         "opt_ue_alpha": "匯出 PMX 時去除貼圖透明通道（UE 貼圖 alpha 常是資料遮罩）",
+        "opt_ue_align": "自動對齊到參考模型（部件放回正確位置）",
+        "opt_ue_align_pick": "選擇參考模型…",
+        "opt_ue_align_none": "未選擇（按各自原點匯出）",
+        "opt_ue_align_wait": "先用「選擇參考模型」指定整身 .uemodel",
+        "note_ue_align": "（UEFormat 常把一個角色拆成多個 .uemodel：身體 / 頭髮+皮膚 / 服裝…。部件檔自帶的 *_adjust 骨指向它在整身上的掛點，勾選後會依這些骨自動求出平移，把它放回正確位置並共用同一套居中基準 —— 不勾則每個檔案各自居中，疊進同一場景會互相錯位）",
+        "msg_ue_align_weak_ref": "「{name}」看起來不是整身模型（骨架只鋪開 {spread} cm，整身通常 120 cm 以上）。\n\n對齊是單向的：應該拿「整身」當參考、把「部件」對齊過去。選反了會把整身搬進部件的局部空間，整個模型會整體偏移。\n\n已自動取消勾選對齊。請改選整身（身體）那個 .uemodel。",
         "opt_ue_height": "PMX → uemodel 身高",
         "unit_cm": "公分",
         "note_ue": "（.uemodel 是 UEFormat 公開交換格式：FortnitePorting / FModel 等從 UE 資源匯出的中介檔；兩個方向都會自動換軸，PMX→UE 預設按身高折算成公分，也可用上面的縮放選「原始尺寸」保持 1:1）",
@@ -507,6 +519,12 @@ LANG = {
         "tab_ue": "UE",
         "opt_ue_fbx": "Also export an FBX file when converting uemodel → PMX",
         "opt_ue_alpha": "Strip texture alpha when exporting PMX (UE alpha is often a data mask)",
+        "opt_ue_align": "Auto-align to a reference model (put parts back in place)",
+        "opt_ue_align_pick": "Pick reference model…",
+        "opt_ue_align_none": "None (export at each file's own origin)",
+        "opt_ue_align_wait": "Pick a full-body .uemodel with the button above first",
+        "note_ue_align": "(UEFormat often splits one character into several .uemodel files: body / hair+skin / outfit… The *_adjust bones in a part file point at where it attaches on the full body. When enabled, those bones are used to solve a rigid offset that puts the part back in place and makes it share the reference's centering — otherwise every file is centred on its own and the parts misalign when loaded together)",
+        "msg_ue_align_weak_ref": "\"{name}\" does not look like a full-body model (its skeleton only spans {spread} cm; a full body is usually over 120 cm).\n\nAlignment is one-way: the full body should be the reference and the parts should be aligned onto it. Choosing the wrong way round moves the whole body into the part's local space and shifts the entire model.\n\nThe align option has been turned off. Please pick the full-body .uemodel instead.",
         "opt_ue_height": "PMX → uemodel height",
         "unit_cm": "cm",
         "note_ue": "(.uemodel is the public UEFormat exchange format used by FortnitePorting / FModel; both directions re-map axes automatically and PMX→UE converts the height to centimetres by default — pick Raw size above to keep it 1:1)",
@@ -647,6 +665,12 @@ LANG = {
         "tab_ue": "UE",
         "opt_ue_fbx": "uemodel → PMX のときに FBX も同時出力",
         "opt_ue_alpha": "PMX 出力時にテクスチャのアルファを外す（UE の alpha はデータマスクのことが多い）",
+        "opt_ue_align": "参照モデルに自動整列（パーツを正しい位置へ）",
+        "opt_ue_align_pick": "参照モデルを選択…",
+        "opt_ue_align_none": "未選択（各ファイルの原点で出力）",
+        "opt_ue_align_wait": "先に「参照モデルを選択」で全身 .uemodel を指定してください",
+        "note_ue_align": "（UEFormat では 1 体のキャラが複数の .uemodel に分かれることがよくあります：体 / 髪＋肌 / 服…。パーツ側の *_adjust 骨が全身への取付点を示すので、有効にするとその骨から平行移動を解いて正しい位置に戻し、参照モデルと同じセンタリング基準を共有します。無効だと各ファイルが個別にセンタリングされ、同じシーンに読み込むとズレます）",
+        "msg_ue_align_weak_ref": "「{name}」は全身モデルではないようです（骨格の広がりが {spread} cm しかありません。全身なら通常 120 cm 以上）。\n\n整列は一方通行です：「全身」を参照にして「パーツ」を合わせるのが正しい向きです。逆にすると全身がパーツのローカル空間に移動され、モデル全体がずれます。\n\n整列のチェックを自動的に外しました。全身（体）の .uemodel を選び直してください。",
         "opt_ue_height": "PMX → uemodel の身長",
         "unit_cm": "cm",
         "note_ue": "（.uemodel は UEFormat の公開交換形式で、FortnitePorting / FModel などが UE アセットから書き出します。どちらの方向も軸は自動変換、PMX→UE は既定で身長を cm に換算します。1:1 にしたい場合は上の倍率で「元のサイズ」を選んでください）",
@@ -1180,6 +1204,8 @@ class ConverterApp:
         # UE（UEFormat / .uemodel）
         self.var_ue_fbx = tk.BooleanVar(value=False)
         self.var_ue_alpha = tk.BooleanVar(value=True)
+        self.var_ue_align = tk.BooleanVar(value=False)
+        self.var_ue_align_ref = tk.StringVar(value="")
         self.var_ue_height = tk.StringVar(value="180")
         # PSK / PSKX（Unreal ActorX）
         self.var_psk_jp = tk.BooleanVar(value=True)
@@ -1471,6 +1497,24 @@ class ConverterApp:
         tab_u = self._tab(nb, t("tab_ue"))
         self._bigcheck(tab_u, t("opt_ue_fbx"), self.var_ue_fbx)
         self._bigcheck(tab_u, t("opt_ue_alpha"), self.var_ue_alpha)
+        self._bigcheck(tab_u, t("opt_ue_align"), self.var_ue_align,
+                       command=self._pick_ue_align_ref)
+        # 参考模型选择行
+        rowal = tk.Frame(tab_u, bg=CARD)
+        rowal.pack(fill="x", padx=px(28), pady=(px(2), 0))
+        self.btn_ue_align = tk.Button(
+            rowal, text=t("opt_ue_align_pick"), font=F_SUB, bg=CARD, fg=ACCENT,
+            relief="solid", bd=1, highlightthickness=0, cursor="hand2",
+            command=self._choose_ue_align_ref)
+        self.btn_ue_align.pack(side="left")
+        self.lbl_ue_align = tk.Label(rowal, text=t("opt_ue_align_none"),
+                                     font=F_SUB, bg=CARD, fg=MUTED,
+                                     anchor="w", justify="left")
+        self.lbl_ue_align.pack(side="left", padx=(px(8), 0))
+        tk.Label(tab_u, text=t("note_ue_align"), font=F_SUB, bg=CARD,
+                 fg=MUTED, justify="left", anchor="w", wraplength=px(520)
+                 ).pack(fill="x", padx=px(28), pady=(px(2), px(6)))
+        self._sync_ue_align_ui()
         rowu = tk.Frame(tab_u, bg=CARD)
         rowu.pack(fill="x", padx=px(14), pady=(px(4), 0))
         tk.Label(rowu, text=t("opt_ue_height"), font=F_BODY, bg=CARD,
@@ -2110,6 +2154,8 @@ class ConverterApp:
                            "face_180": self.var_face180.get(),
                            "ue_fbx": self.var_ue_fbx.get(),
                            "ue_alpha": self.var_ue_alpha.get(),
+                           "ue_align": bool(self.var_ue_align.get()),
+                           "ue_align_ref": self.var_ue_align_ref.get(),
                            "ue_height": self.var_ue_height.get(),
                            "psk_jp": self.var_psk_jp.get(),
                            "psk_ik": self.var_psk_ik.get(),
@@ -2167,6 +2213,57 @@ class ConverterApp:
         custom = self.var_scale_custom.get()
         self.ent_scale.configure(state="normal" if custom else "disabled",
                                  fg=TXT if custom else FAINT)
+
+    # -- uemodel 部件对齐到参考模型 ------------------------------------------
+    def _pick_ue_align_ref(self):
+        """勾选「自动对齐」时若还没选参考模型，直接弹选择框。"""
+        if self.var_ue_align.get() and not self.var_ue_align_ref.get():
+            self._choose_ue_align_ref()
+        self._sync_ue_align_ui()
+
+    def _choose_ue_align_ref(self):
+        p = filedialog.askopenfilename(
+            title=t("opt_ue_align_pick"),
+            filetypes=[("UEFormat 模型", "*.uemodel"), ("所有文件", "*.*")])
+        if p:
+            self.var_ue_align_ref.set(p)
+            self.var_ue_align.set(True)
+            self._check_ue_align_ref(p)
+        self._sync_ue_align_ui()
+
+    def _check_ue_align_ref(self, path):
+        """检查选中的参考模型是否是「整身（世界空间）」。
+
+        对齐是单向的：把当前文件搬进参考模型的空间。用户很容易选反
+        （拿部件当参考），那会把整身搬进部件的局部空间 —— 表现成
+        「整个模型整体往下掉十几单位」。这里提前拦一下，转换前就提示。
+        """
+        try:
+            ref = uemodelio.read_uemodel(path)
+            spread = uemodel2pmx._bone_spread(ref)
+            # 整身模型骨架铺开通常 >120cm；局部空间部件只有几十 cm
+            if spread and spread < 120.0:
+                messagebox.showwarning(
+                    t("opt_ue_align_pick"),
+                    t("msg_ue_align_weak_ref", name=os.path.basename(path),
+                      spread=("%.0f" % spread)))
+                self.var_ue_align.set(False)
+        except Exception:
+            pass  # 读不了就交给转换阶段处理
+
+    def _sync_ue_align_ui(self):
+        ref = self.var_ue_align_ref.get()
+        on = bool(self.var_ue_align.get())
+        if not ref:
+            self.lbl_ue_align.configure(
+                text=t("opt_ue_align_wait"), fg=FAINT)
+        else:
+            self.lbl_ue_align.configure(
+                text=os.path.basename(ref), fg=(TXT if on else MUTED))
+        try:
+            self.btn_ue_align.configure(state="normal")
+        except tk.TclError:
+            pass
 
     def _toggle_outdir(self):
         same = self.var_same_dir.get()
@@ -2490,15 +2587,19 @@ class ConverterApp:
             self.log(t("log_staged_drop"), "warn")
 
     def _snapshot_cfg(self):
+        # 「自动」= 交给各转换器选自己的稳妥默认：fbx / vrm / psk 走 "mmd"
+        #（按身高归一到 20 单位），uemodel 走 "fixed"（UE cm→MMD 1/8 固定比例，
+        # 部件才能保持相对大小）。这里统一发 "auto"，由各转换器自己解释，
+        # 免得 GUI 端硬写死成 mmd 把 uemodel 的默认覆盖掉。
         if self.var_scale_auto.get():
-            scale = "mmd"
+            scale = "auto"
         elif self.var_scale_raw.get():
             scale = 1.0
         else:
             try:
                 scale = float(self.var_scale_value.get().strip())
             except ValueError:
-                scale = "mmd"
+                scale = "auto"
         return {
             "scale": scale,
             "flip_z": bool(self.var_flipz.get()),
@@ -2518,6 +2619,8 @@ class ConverterApp:
             "face_180": bool(self.var_face180.get()),
             "ue_fbx": bool(self.var_ue_fbx.get()),
             "ue_alpha": bool(self.var_ue_alpha.get()),
+            "ue_align": bool(self.var_ue_align.get()),
+            "ue_align_ref": self.var_ue_align_ref.get(),
             "ue_height": self.var_ue_height.get(),
             "subfolder": bool(self.var_subfolder.get()),
             "psk_jp": bool(self.var_psk_jp.get()),
@@ -2740,6 +2843,8 @@ class ConverterApp:
                                  log=self._logfn(), name=stem,
                                  fbx_path=fbx,
                                  remove_alpha=cfg.get("ue_alpha", True),
+                                 align_to=(cfg.get("ue_align_ref") or None)
+                                 if cfg.get("ue_align") else None,
                                  force_double_sided=cfg.get("force_two_sided",
                                                             False))
         q.put(("log", "已写出 %s（%s）"

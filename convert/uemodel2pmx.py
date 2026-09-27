@@ -29,7 +29,7 @@ UEFormat 是 FortnitePorting / FModel / CUE4Parse 生态的公开交换格式
 
 用法：
     python uemodel2pmx.py model.uemodel -o model.pmx
-    python uemodel2pmx.py model.uemodel --scale 0.115 --fbx
+    python uemodel2pmx.py model.uemodel --scale fixed --fbx
 """
 
 import argparse
@@ -212,11 +212,324 @@ def _copy_texture(src, dst, remove_alpha):
 
 
 # --------------------------------------------------------------------- 主体 --
-def convert(path, out_path, scale_mode="mmd", lod_index=0, log=None,
+def _bone_tokens(nm):
+    """把骨名切成有意义的 token（去掉纯数字序号与命名空间前缀）。
+
+    `clavicle_l_adjust` → ('clavicle','l')
+    `spine_01_adjust`   → ('spine',)
+    `Bip001-L-Clavicle` → ('clavicle','l')   ← 序号与 `Bip` 一律丢掉
+    `neck_01_adjust`    → ('neck',)
+    `head_adjust`       → ('head',)
+    """
+    s = _strip_ns(nm or "")
+    low = s.lower()
+    for suf in ("_adjust", "-adjust", ".adjust", "adjust", "_adj", "_ctrl"):
+        if low.endswith(suf) and len(low) > len(suf):
+            s = s[:len(s) - len(suf)]
+            low = s.lower()
+            break
+    for pre in ("adjust_", "adj_", "ctrl_"):
+        if low.startswith(pre) and len(low) > len(pre):
+            s = s[len(pre):]
+            low = s.lower()
+            break
+    toks = []
+    for part in s.replace("-", "_").replace(".", "_").replace(" ", "_").split("_"):
+        part = "".join(c for c in part.lower() if c.isalnum())
+        if not part:
+            continue
+        # 去掉尾部的数字序号：`bip001` → `bip`、`spine1` → `spine`、`01` → 空
+        core = part.rstrip("0123456789")
+        if not core:
+            continue
+        # `bip` 只是 Biped 包的壳，不带语义；`bn` / `bone` 同理
+        if core in ("bip", "bn", "bone", "b"):
+            continue
+        toks.append(core)
+    # 左右标记**统一挪到末尾**：`clavicle_l` 与 `l_clavicle` 是同一根骨的不同写法
+    # （`Bn_l_hairA_001` 是前者、`Bip001-L-Clavicle` 切出来是后者），
+    # 不归一化就永远对不上。
+    side = [t for t in toks if t in ("l", "r", "lf", "rt", "left", "right")]
+    body = [t for t in toks if t not in ("l", "r", "lf", "rt", "left", "right")]
+    if side:
+        s0 = side[0]
+        s0 = {"lf": "l", "left": "l", "rt": "r", "right": "r"}.get(s0, s0)
+        body.append(s0)
+    return tuple(body)
+
+
+def _bone_world(m):
+    """骨骼局部坐标（T·R·S，父左乘）→ 源世界坐标列表。与主体同一套公式。"""
+    n = len(m.skeleton.bones)
+    world = [None] * n
+    state = [0] * n
+
+    def build(i, depth=0):
+        if i < 0 or i >= n or state[i] == 2 or depth > 512:
+            return
+        b = m.skeleton.bones[i]
+        if state[i] == 1:                 # 环：当根处理
+            world[i] = (_qmat(b.rot), tuple(b.pos))
+            state[i] = 2
+            return
+        state[i] = 1
+        p = b.parent
+        if p < 0 or p >= n:
+            world[i] = (_qmat(b.rot), tuple(b.pos))
+        else:
+            build(p, depth + 1)
+            pr, pt = world[p]
+            if pr is None:
+                world[i] = (_qmat(b.rot), tuple(b.pos))
+            else:
+                world[i] = (_mm(pr, _qmat(b.rot)),
+                            _add(_mv(pr, b.pos), pt))
+        state[i] = 2
+
+    for i in range(n):
+        build(i)
+    for i in range(n):
+        if world[i] is None:
+            world[i] = (_qmat(m.skeleton.bones[i].rot),
+                        tuple(m.skeleton.bones[i].pos))
+    return [world[i][1] for i in range(n)]
+
+
+# 「部件文件」自带的、指明它挂在参考模型哪个位置的调节骨。命名是各家约定，
+# 但 *_adjust 这个后缀在本样本（鸣潮 / 黑鸟 042）里非常稳定，且能精确命中
+# 参考模型的 Bip001 骨（误差 < 1e-4 cm）。
+_ALIGN_SUFFIXES = ("_adjust",)
+
+
+def _norm_bone(nm):
+    """骨名归一化，用于跨 LOD / 跨部件的模糊配对。
+
+    去掉命名空间前缀与常见前后缀、只留字母数字，再小写。
+    例：`clavicle_l_adjust` → `claviclel`；`adjust_clavicle_l` → `claviclel`；
+        `Bip001-L-Clavicle`  → `bip001lclavicle`（**不同**，所以匹配要按
+        「全名 → 去前后缀 → 归一化」三级依次放宽，见 find_align_offset）。
+    """
+    s = (nm or "").strip()
+    low = s.lower()
+    for suf in ("_adjust", "-adjust", ".adjust", "adjust", "_adj", "_ctrl",
+                "_control", "_ref", "_target", "_offset", "_helper"):
+        if low.endswith(suf) and len(low) > len(suf):
+            s = s[:len(s) - len(suf)]
+            low = s.lower()
+            break
+    for pre in ("adjust_", "adjust-", "adj_", "ctrl_", "control_", "ref_",
+                "target_", "offset_", "helper_"):
+        if low.startswith(pre) and len(low) > len(pre):
+            s = s[len(pre):]
+            low = s.lower()
+            break
+    return "".join(c for c in s.lower() if c.isalnum())
+
+
+def _strip_ns(nm):
+    """再去掉一层命名空间前缀（`xxx:yyy` / `xxx|yyy` / `xxx.yyy`）。"""
+    out = []
+    for sep in (":", "|", "/"):
+        if sep in nm:
+            out = nm.split(sep)
+            break
+    return nm if not out else out[-1]
+
+
+def _bone_alias(nm):
+    """一个骨名可能对应的所有归一化别名（含去命名空间版本）。"""
+    al = set()
+    if not nm:
+        return al
+    for base in (nm, _strip_ns(nm)):
+        al.add(_norm_bone(base))
+        # UE/Maya 里常见的 <N>_ 编号前缀：`1_head` → `head`
+        b2 = base
+        for sep in ("_", "-", "."):
+            parts = b2.split(sep)
+            if len(parts) > 1 and parts[0].isdigit():
+                al.add(_norm_bone(sep.join(parts[1:])))
+    al.discard("")
+    return al
+
+
+def _bone_spread(m):
+    """骨骼世界坐标的包围盒对角线长度（源 cm）。用来判断「这是整身还是部件」。
+
+    整身模型骨架铺开（脚 0 → 头 ~150cm），对角线上百 cm；
+    局部空间部件（如头骨局部）骨架挤在原点附近，对角线很小。
+    """
+    ws = _bone_world(m)
+    if not ws:
+        return 0.0
+    xs = [p[0] for p in ws]
+    ys = [p[1] for p in ws]
+    zs = [p[2] for p in ws]
+    dx = max(xs) - min(xs)
+    dy = max(ys) - min(ys)
+    dz = max(zs) - min(zs)
+    return (dx * dx + dy * dy + dz * dz) ** 0.5
+
+
+def _bbox_diag(m):
+    """第 0 个 LOD 顶点包围盒对角线长度（源 cm），用于「部件是否已落在参考内」。"""
+    if not m.lods:
+        return 0.0
+    vs = m.lods[0].vertices
+    if not vs:
+        return 0.0
+    xs = [v[0] for v in vs]
+    ys = [v[1] for v in vs]
+    zs = [v[2] for v in vs]
+    dx = max(xs) - min(xs)
+    dy = max(ys) - min(ys)
+    dz = max(zs) - min(zs)
+    return (dx * dx + dy * dy + dz * dz) ** 0.5
+
+
+def find_align_offset(part, ref, log=None):
+    """求「部件 uemodel」挂到「参考 uemodel」上所需的刚性平移（源 cm）。
+
+    UEFormat 一个角色常被拆成多个 .uemodel（身体 / 头发+皮肤 / 服装…）。
+    但**部件文件不一定和整身共用同一世界原点**：实测
+    `Blackbird042_nighty_hair_skin.uemodel` 的坐标是**头部骨的局部空间**
+    （它的 `head_adjust` 就在原点，`clavicle_l_adjust` = (1.812, -1.916, -10.748)），
+    而它自带的 `*_adjust` 骨加一个平移后能**精确**落在参考模型的
+    `Bip001-L-Clavicle` = (1.812, 0.194, 137.905) 上，平移量
+    = 参考模型 `Bip001-Head` 的世界坐标 = (0, 2.110, 148.653)。
+
+    匹配顺序（逐级放宽，先精确后模糊）：
+      ① 部件骨名**原样**在参考模型里找同名骨；
+      ② 去掉 `_adjust` 之类后缀 / `adjust_` 之类前缀后再找；
+      ③ 归一化（只留字母数字、小写）后找——这一级能吃下
+         `Bip001-L-Clavicle` ↔ `bip001lclavicle` 这种前缀差异。
+    命中骨对的位移差按 0.02cm 分箱投票，取票数最高的一档求精确平均；
+    要求 ≥3 票且最大残差 ≤0.05cm，否则判定不可信、放弃对齐。
+
+    返回 (offset, n_hits, total) 或 (None, 0, 0)。
+    """
+    _l = log or _log_default
+    pn = [b.name or "" for b in part.skeleton.bones]
+    rn = [b.name or "" for b in ref.skeleton.bones]
+    pw = _bone_world(part)
+    rw = _bone_world(ref)
+
+    # 参考模型：多级索引（全名 / 去前后缀 / 归一化别名 / token 序列）→ 骨世界坐标
+    idx_exact, idx_alias = {}, {}
+    tok_map = {}
+    for i, nm in enumerate(rn):
+        if not nm:
+            continue
+        idx_exact.setdefault(nm.lower(), rw[i])
+        for a in _bone_alias(nm):
+            idx_alias.setdefault(a, rw[i])
+        tok_map.setdefault(_bone_tokens(nm), []).append(rw[i])
+    # 歧义时取**列表第一根**：骨骼按父先子后排列，第一根就是层级最靠上的那根
+    # （`Bip001-Spine` 先于 `Bip001-Spine1/2`，正是部件 adjust 骨要挂的那个）。
+    tok_first = {k: v[0] for k, v in tok_map.items()}
+
+    # 逐骨求「部件骨 → 参考骨」的位移差，按 0.02cm 分箱投票
+    BIN = 0.02
+    votes = {}
+    n_matched = 0
+    for i, nm in enumerate(pn):
+        if not nm:
+            continue
+        target = idx_exact.get(nm.lower())
+        if target is None:
+            # ② 只去掉本侧后缀/前缀（`clavicle_l_adjust` → `clavicle_l`），
+            #    避免直接归一化把 `Bip001-L-Clavicle` 也一起搅进来
+            cands = []
+            low = nm.lower()
+            for suf in ("_adjust", "-adjust", ".adjust", "_adj", "_ctrl"):
+                if low.endswith(suf):
+                    cands.append(nm[:len(nm) - len(suf)])
+            for pre in ("adjust_", "adj_", "ctrl_"):
+                if low.startswith(pre):
+                    cands.append(nm[len(pre):])
+            for c in cands:
+                target = idx_exact.get(c.lower())
+                if target is not None:
+                    break
+        if target is None:
+            # ③ 归一化兜底
+            for a in _bone_alias(nm):
+                target = idx_alias.get(a)
+                if target is not None:
+                    break
+        if target is None:
+            # ④ token 序列（已丢掉数字序号与 bip/bn/bone 包壳），
+            #    这一级吃下 `clavicle_l_adjust` ↔ `Bip001-L-Clavicle`、
+            #    `spine_01_adjust` ↔ `Bip001-Spine` 这类前缀/编号差异。
+            #    token 有歧义时（`Bip001-Spine/Spine1/Spine2` 都归成 ('spine',)）
+            #    取层级最靠上的第一根，靠后面的「分箱投票 + 残差复核」兜底：
+            #    选错了那一票就会落在别的箱里、票数不够而被整体否决。
+            target = tok_first.get(_bone_tokens(nm))
+        if target is None:
+            continue
+        n_matched += 1
+        d = (target[0] - pw[i][0], target[1] - pw[i][1], target[2] - pw[i][2])
+        k = (round(d[0] / BIN), round(d[1] / BIN), round(d[2] / BIN))
+        votes.setdefault(k, []).append((pw[i], target, nm))
+
+    if not votes:
+        _l("对齐：部件 %d 根骨里没找到与参考模型同名/近名的骨，放弃"
+           % len(pn), "warn")
+        return None, 0, len(pn)
+    best_key = max(votes.items(), key=lambda kv: len(kv[1]))[0]
+    lst = votes[best_key]
+    n = float(len(lst))
+    avg = (sum(t[1][0] - t[0][0] for t in lst) / n,
+           sum(t[1][1] - t[0][1] for t in lst) / n,
+           sum(t[1][2] - t[0][2] for t in lst) / n)
+    # 用平均位移复核：命中够多、且残差足够小才算可信
+    res = [(abs(t[1][0] - t[0][0] - avg[0]) + abs(t[1][1] - t[0][1] - avg[1])
+            + abs(t[1][2] - t[0][2] - avg[2])) for t in lst]
+    spread = max(res) if res else 9e9
+    if len(lst) < 3 or spread > 0.05:
+        _l("对齐：最高票只有 %d 根（共匹配 %d 根 · 最大残差 %.4f cm），不够可信，跳过"
+           % (len(lst), n_matched, spread), "warn")
+        return None, len(lst), len(pn)
+
+    # ---- 方向守卫：参考模型必须是「整身（世界空间）」才有资格当参考。
+    #
+    #  对齐是**单向**的：它把「部件」搬进「参考」的空间。如果用户把方向选反了
+    #  （拿部件当参考、拿整身当部件 —— 实测很容易发生：两个文件都勾了「自动对齐」
+    #  并都选了同一个参考），整身反而会被搬进部件的头骨局部空间，
+    #  表现成「整个材质和骨骼整体往下掉 15.5 单位」。数学上这个平移是**成立**的
+    #  （残差极小、票数充足），所以光靠残差判据拦不住，必须另加几何判据：
+    #
+    #  ① 参考骨架的铺开程度必须明显大于部件（整身 150cm vs 部件几十 cm）；
+    #  ② 若参考的骨架反而比部件还挤，说明参考自己就是局部空间的部件 → 拒绝。
+    p_spread = _bone_spread(part)
+    r_spread = _bone_spread(ref)
+    if p_spread > 0 and r_spread < p_spread * 0.8:
+        _l("对齐：参考模型的骨架铺开 %.1f cm，比本文件 %.1f cm 还小 —— "
+           "参考本身就是个局部空间部件（多半是把方向选反了），跳过对齐"
+           % (r_spread, p_spread), "warn")
+        return None, len(lst), len(pn)
+
+    _l("对齐：匹配 %d 根骨 · 其中 %d 根落在同一刚性位置（残差 ≤ %.4f cm）"
+       % (n_matched, len(lst), spread))
+    _l("      平移 (%.4f, %.4f, %.4f) cm" % avg)
+    for t in lst[:8]:
+        _l("      %-22s 部件(%8.3f,%8.3f,%8.3f) → 参考(%8.3f,%8.3f,%8.3f)"
+           % (t[2], t[0][0], t[0][1], t[0][2],
+              t[1][0], t[1][1], t[1][2]), "info")
+    return avg, len(lst), len(pn)
+
+
+def convert(path, out_path, scale_mode="fixed", lod_index=0, log=None,
             name=None, enable_edge=False, force_double_sided=False,
             textures=True, keep_add_uv=True, fbx_path=None,
-            remove_alpha=True, flip_winding="auto", center=True):
-    """uemodel → PMX。返回统计 dict。fbx_path 非空时同时导出 ASCII FBX。"""
+            remove_alpha=True, flip_winding="auto", center=True,
+            align_to=None):
+    """uemodel → PMX。返回统计 dict。fbx_path 非空时同时导出 ASCII FBX。
+
+    align_to：可选，参考模型（整身 .uemodel）路径。给了就把本文件当成
+    「挂在参考模型某处的部件」，按自带的 *_adjust 骨与参考模型同名骨求平移，
+    把它放回参考模型的世界位置（见 `find_align_offset` 的说明）。
+    """
     _l = log or _log_default
 
     m = uemodelio.read_uemodel(path)
@@ -241,38 +554,95 @@ def convert(path, out_path, scale_mode="mmd", lod_index=0, log=None,
     def xf(p):
         return (p[0], p[2], -p[1])
 
-    # ---- 缩放：包围盒 → MMD 常规身高 20 单位
-    #      注意必须**在骨骼之前**算出来：骨骼世界坐标和顶点用同一个 scale，
-    #      否则会出现「网格高 20、骨链却还在源尺度」的鬼模型（手骨跑到 x=33，
-    #      网格只有 ±5.8，摆姿势时整条链飞出去）。
+    # ---- 缩放：UE 单位 = 1 cm，MMD 惯例 1 单位 = 8 cm（≈ 20 单位 = 160cm 身高）。
+    #      用**固定**比例（UE cm → MMD 单位），而不是「按身高归一到 20 单位」：
+    #      UEFormat 一个角色常被拆成多个 .uemodel（身体 / 头发+皮肤 / 服装…），
+    #      每个都是同一世界尺度下的部件。若按各自身高都归一化到 20，部件会被
+    #      各自放大成「整只角色」大小，载入同一场景就互相错位，表现成
+    #      「某部件比例变大」——这正是与 Blender+mmd_tools 不一致的根源
+    #      （mmd_tools 对所有文件用同一固定比例，部件间相对大小保持正确）。
+    #      固定比例对**整身**模型同样没问题：161cm 角色 → 161/8 ≈ 20.1 单位，
+    #      仍是 MMD 的标准身高。要「每个文件都拉到 20 单位」时用 --scale mmd。
+    #
+    #      注意 scale 必须**在骨骼之前**算出来：骨骼世界坐标和顶点共用同一个
+    #      scale，否则会出现「网格高 20、骨链却还在源尺度」的鬼模型。
+    UE_CM_PER_MMD = 8.0
     vs_src = lod.vertices
     pts = [xf(v) for v in vs_src]
     ys = [p[1] for p in pts]
     lo_y, hi_y = (min(ys), max(ys)) if ys else (0.0, 1.0)
     head = max(abs(lo_y), abs(hi_y), 1e-6)
-    if scale_mode in ("mmd", "auto", None):
+    if scale_mode in ("fixed", "auto", None, ""):
+        scale = 1.0 / UE_CM_PER_MMD
+    elif scale_mode == "mmd":
         scale = 20.0 / max(hi_y, 1e-6)
         if hi_y <= 0:
             scale = 20.0 / head
     else:
         scale = float(scale_mode)
-    _l("缩放：源高 %.2f 单位 × %.6f → %.2f（MMD 常规 20）"
-       % (hi_y, scale, hi_y * scale))
+    src_h = hi_y - lo_y
+    _l("缩放：源高 %.2f cm × %.6f → %.2f（fixed=1/8 cm，mmd=归一到 20）"
+       % (src_h, scale, src_h * scale))
+
+    # ---- 部件对齐：把本文件（头发/皮肤等）放回参考模型的世界位置。
+    #      必须在「换轴 + 缩放」之前做，因为位移是**源 cm**，跟着顶点一起缩放。
+    #      注意 align_off 一定要**同时**加到顶点和骨骼上（与 scale 同理）。
+    align_off = (0.0, 0.0, 0.0)
+    align_ref_pts = []
+    if align_to:
+        try:
+            ref = uemodelio.read_uemodel(align_to)
+            off, hit, tot = find_align_offset(m, ref, log=_l)
+            if off is not None:
+                align_off = off
+                # 居中基准也要取自参考模型（否则各自居中 = 又错位）
+                if ref.lods:
+                    align_ref_pts = ref.lods[0].vertices
+                _l("已按 %s 对齐（源坐标整体平移）"
+                   % os.path.basename(align_to), "ok")
+            else:
+                _l("对齐失败（命中 %d/%d），按自身原点导出" % (hit, tot), "warn")
+        except Exception as e:
+            _l("对齐失败：%s（按自身原点导出）" % e, "warn")
+
+    if align_off != (0.0, 0.0, 0.0):
+        aoff = xf(align_off)
+        pts = [(p[0] + aoff[0], p[1] + aoff[1], p[2] + aoff[2]) for p in pts]
+        ys = [p[1] for p in pts]
+        lo_y, hi_y = (min(ys), max(ys)) if ys else (0.0, 1.0)
+        _l("对齐后：源高 %.2f cm → %.2f cm（缩放不变）" % (src_h, hi_y - lo_y))
 
     # ---- 居中：x/z 取包围盒中心、y 脚底归零（与 fbx2pmx 的 center=True 同口径）
+    #
+    #     ⚠ 部件（align_to 生效时）不能按**自己**的包围盒居中：那会把刚对齐好的
+    #     位置又拉回原点，等于白对齐 —— 部件和整身各自居中后当然还是错位的。
+    #     所以对齐时改用**参考模型**的居中基准（由参考模型的顶点包围盒算），
+    #     这样部件和整身共用同一套偏移，相对位置才对得上。
     if center and pts:
-        xs = [p[0] for p in pts]
-        zs = [p[2] for p in pts]
-        off = (-(min(xs) + max(xs)) * 0.5 * scale,
-               -lo_y * scale,
-               -(min(zs) + max(zs)) * 0.5 * scale)
-        _l("居中：偏移 (%.3f, %.3f, %.3f)" % off, "info")
+        if align_ref_pts:
+            refs = [xf(v) for v in align_ref_pts]
+            ra = [p[0] for p in refs]
+            rb = [p[1] for p in refs]
+            rc = [p[2] for p in refs]
+            off = (-(min(ra) + max(ra)) * 0.5 * scale,
+                   -min(rb) * scale,
+                   -(min(rc) + max(rc)) * 0.5 * scale)
+            _l("居中：按参考模型包围盒（偏移 (%.3f, %.3f, %.3f)）" % off, "info")
+        else:
+            xs = [p[0] for p in pts]
+            zs = [p[2] for p in pts]
+            off = (-(min(xs) + max(xs)) * 0.5 * scale,
+                   -lo_y * scale,
+                   -(min(zs) + max(zs)) * 0.5 * scale)
+            _l("居中：偏移 (%.3f, %.3f, %.3f)" % off, "info")
     else:
         off = (0.0, 0.0, 0.0)
 
     def sp(p):
-        """源坐标 → PMX 坐标（换轴 + 缩放 + 居中），顶点和骨骼共用。"""
-        t = xf(p)
+        """源坐标 → PMX 坐标（对齐 + 换轴 + 缩放 + 居中），顶点和骨骼共用。"""
+        q = (p[0] + align_off[0], p[1] + align_off[1], p[2] + align_off[2]) \
+            if align_off != (0.0, 0.0, 0.0) else p
+        t = xf(q)
         return (t[0] * scale + off[0], t[1] * scale + off[1],
                 t[2] * scale + off[2])
 
@@ -571,7 +941,7 @@ def convert(path, out_path, scale_mode="mmd", lod_index=0, log=None,
     # 绝对坐标 pos（≈ 原点），一拖表情滑块整束头发就塌到脚底、留下从头顶拖到地面的
     # 长条拉伸面（用户报的「表情顶点拉伸」就是这个）。
     def sdir(d):
-        """源位移 → PMX 位移（只换轴 + 缩放，不平移）。"""
+        """源位移 → PMX 位移（只换轴 + 缩放，不平移、也不加对齐）。"""
         t = xf(d)
         return (t[0] * scale, t[1] * scale, t[2] * scale)
 
@@ -636,10 +1006,15 @@ def convert(path, out_path, scale_mode="mmd", lod_index=0, log=None,
         _l("提示：%d 条第 5 及以后的骨骼权重被丢弃（PMX 最多 4 根）"
            % n_weights_dropped, "info")
 
+    # height = **输出 PMX 里**的真实高度（源高度 × scale），不是源高度本身：
+    # 之前写成 hi_y-lo_y，mmd 模式下会误报成源高度，容易让人以为缩放没生效。
     st = {"bytes": size, "vertices": len(pmx_verts),
           "tris": len(pmx_faces) // 3, "bones": len(pmx_bones),
           "materials": len(pmx_materials), "morphs": len(pmx_morphs),
-          "textures": len(pmx_textures), "scale": scale, "lod": lod_index}
+          "textures": len(pmx_textures), "scale": scale, "lod": lod_index,
+          "height": (hi_y - lo_y) * scale, "src_height": src_h,
+          "align_off": align_off,
+          "aligned": align_off != (0.0, 0.0, 0.0)}
 
     # ---- 可选：同时导出 FBX（与 PMX 同一姿势，Y-up 右手系，便于进 Blender/UE）
     if fbx_path:
@@ -663,7 +1038,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="UEFormat(.uemodel) → MMD PMX（纯 Python）")
     ap.add_argument("src")
     ap.add_argument("-o", "--out", default=None)
-    ap.add_argument("--scale", default="mmd", help="mmd（归一到 20 单位）或具体倍率")
+    ap.add_argument("--scale", default="fixed",
+                    help="fixed（默认：UE cm→MMD 1/8，部件保持相对大小）"
+                         " / mmd（每个文件归一到 20 单位） / 具体倍率")
     ap.add_argument("--lod", type=int, default=0)
     ap.add_argument("--edge", action="store_true", help="给材质开启 MMD 轮廓线")
     ap.add_argument("--force-double-sided", action="store_true")
@@ -672,6 +1049,9 @@ def main(argv=None):
                     help="保留贴图 alpha（默认去掉：UE 贴图的 alpha 多是数据遮罩，"
                          "留着会让 MMD 里整个模型透明）")
     ap.add_argument("--no-add-uv", action="store_true", help="不写附加 UV")
+    ap.add_argument("--align-to", default=None,
+                    help="参考模型（整身 .uemodel）路径：按 *_adjust 骨求平移，"
+                         "把本文件当成挂在它上面的部件放回正确位置")
     ap.add_argument("--fbx", action="store_true", help="同时导出 FBX")
     ap.add_argument("--name", default=None)
     a = ap.parse_args(argv)
@@ -681,7 +1061,8 @@ def main(argv=None):
                  log=lambda m_, t=None: print(m_), name=a.name,
                  enable_edge=a.edge, force_double_sided=a.force_double_sided,
                  textures=not a.no_textures, keep_add_uv=not a.no_add_uv,
-                 remove_alpha=not a.keep_alpha, fbx_path=fbx)
+                 remove_alpha=not a.keep_alpha, fbx_path=fbx,
+                 align_to=a.align_to)
     print("完成：%s（%.2f MB）" % (out, st["bytes"] / 1048576.0))
     return 0
 

@@ -1597,7 +1597,7 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
         })
 
     # ---- scale: MMD units put a character at roughly 20 units tall
-    if scale_mode == "mmd":
+    if scale_mode in ("mmd", "auto", None, ""):
         # 用第一个顶点初始化，避免模型整体浮空（y 全为正）时把 ymin 误当 0 导致缩放算错
         first = True
         ymax = ymin = 0.0
