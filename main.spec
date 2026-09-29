@@ -1,18 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-import sys
 
-app_name = 'ModelConvert'
-
-is_win = sys.platform.startswith('win')
-is_mac = sys.platform == 'darwin'
-is_linux = sys.platform.startswith('linux')
-
-if is_win:
-    icon_file = 'MC_2.ico'
-elif is_mac:
-    icon_file = 'MC_2.icns'
-else:
-    icon_file = None
 
 a = Analysis(
     ['main.py'],
@@ -23,8 +10,7 @@ a = Analysis(
     pathex=['.', 'formats', 'convert', 'gfx'],
     binaries=[],
     datas=[],
-    hiddenimports=['fbx2pmx', 'pmx_check', 'pmx2vrm', 'vrm2pmx', 'preview','pmx2psk','psk2pmx'
-                   'unitypackage_unpack', 'fbx_reader', 'pmxio', 'vrmio','pskio'
+    hiddenimports=['fbx2pmx', 'pmx_check', 'pmx2vrm', 'vrm2pmx', 'preview','pmx2psk','psk2pmx','unitypackage_unpack', 'fbx_reader', 'pmxio', 'vrmio','pskio',
                    # UEFormat（.uemodel）双向转换 + ASCII FBX 写出器
                    'uemodel2pmx', 'pmx2uemodel', 'uemodelio', 'fbxout',
                    # 解压 ZSTD 压缩体（.uemodel 运行期懒加载）
@@ -43,12 +29,12 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name=app_name,
-    icon=icon_file,
+    name='ModelConvert',
+    icon='MC_2.ico',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True if is_win else False,
+    upx=True,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -61,13 +47,7 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=False,
-    name=app_name,
+    upx=True,
+    upx_exclude=[],
+    name='ModelConvert.exe',
 )
-if is_mac:
-    app = BUNDLE(
-        coll,
-        name=f'{app_name}.app',
-        icon=icon_file,
-        bundle_identifier='com.modelconvert.app',
-    )
