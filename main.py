@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""模型转换器图形界面 - FBX / unitypackage / VRM / PMX / PSK 互转。
+"""模型转换器图形界面 - FBX / unitypackage / VRM / PMX / PSK / XPS 互转。
 
-把 .fbx、.unitypackage、.vrm、.pmx、.uemodel、.psk、.pskx 拖进窗口即可自动转换，
-不需要 Blender、不需要 FBX SDK、不需要 Unity，全部是纯 Python。
+把 .fbx、.unitypackage、.vrm、.pmx、.uemodel、.psk、.pskx、.xps 拖进窗口即可
+自动转换，不需要 Blender、不需要 FBX SDK、不需要 Unity，全部是纯 Python。
 
 支持的方向：
     FBX / unitypackage → PMX
@@ -12,6 +12,7 @@
     uemodel → PMX
     PMX → uemodel
     PSK / PSKX（Unreal ActorX）→ PMX
+    XPS / XNALara      → PMX
 
 依赖：仅 Python 标准库（tkinter + ctypes）。
 拖放走 Windows 原生 WM_DROPFILES，不需要安装 tkinterdnd2 之类的第三方库。
@@ -55,6 +56,7 @@ import psk2pmx
 import uemodel2pmx
 import uemodelio
 import vrm2pmx
+import xps2pmx
 import preview as model_preview
 from unitypackage_unpack import unpack as unpack_unitypackage
 
@@ -112,25 +114,25 @@ def px(v):
 
 VRM_SPECS = ["1.0", "0.x"]
 MODEL_EXTS = (".fbx", ".unitypackage", ".vrm", ".pmx", ".uemodel",
-              ".psk", ".pskx")
+              ".psk", ".pskx", ".xps")
 
 # 文件列表里「格式」列的显示名（与界面语言无关，都是格式自身的叫法）
 KIND_LABEL = {"fbx": "FBX", "unitypackage": "Unity", "vrm": "VRM", "pmx": "PMX",
-              "uemodel": "UEFormat", "psk": "PSK"}
+              "uemodel": "UEFormat", "psk": "PSK", "xps": "XPS"}
 
 # ----------------------------------------------------------------- i18n ----
 # 界面所有文案集中在此；切换语言后通过 _rebuild() 重建即可整窗本地化。
 LANG = {
     "zh_CN": {
-        "app_title": "模型转换器 · FBX / VRM / PMX / PSK",
-        "subtitle": "FBX / unitypackage / VRM / PMX / uemodel / PSK 互转 · 纯 Python，不需要 Blender / FBX SDK / Unity",
+        "app_title": "模型转换器 · FBX / VRM / PMX / PSK / XPS",
+        "subtitle": "FBX / unitypackage / VRM / PMX / uemodel / PSK / XPS 互转 · 纯 Python，不需要 Blender / FBX SDK / Unity",
         "zoom_label": "界面缩放",
         "lang_label": "语言",
         # 拖放区两行文案：第一行是主提示（含点击说明），第二行只列格式。
         # 原来把「也可以点击本区域选择文件」塞在格式行里，一行太长（窄窗口会被裁掉），
         # 拆开后两行都短了，配合 _draw_dropzone 的自动折行，任何宽度都不会溢出。
         "drop_hint": "把模型文件拖到这里，也可以点击本区域选择文件",
-        "drop_formats": "支持 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx",
+        "drop_formats": "支持 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx / .xps",
         "task": "任务",
         "task_auto": "自动（按扩展名）",
         "task_fbx2pmx": "FBX / unitypackage → PMX",
@@ -139,16 +141,18 @@ LANG = {
         "task_uemodel2pmx": "uemodel → PMX",
         "task_pmx2uemodel": "PMX → uemodel",
         "task_psk2pmx": "psk / pskx → PMX",
+        "task_xps2pmx": "XPS → PMX",
         "task_pmx2fbx": "PMX → FBX",
         "task_pmx2psk": "PMX → psk / pskx",
         "task_check": "PMX 仅校验 + 预览",
-        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM　·　.uemodel → PMX　·　.psk/.pskx → PMX",
+        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM　·　.uemodel → PMX　·　.psk/.pskx → PMX　·　.xps → PMX",
         "hint_fbx2pmx": "FBX / unitypackage 转成 MMD 的 PMX",
         "hint_vrm2pmx": "VRM 0.x / 1.0 转成 MMD 的 PMX（贴图会导出到同目录）",
         "hint_pmx2vrm": "PMX 转成 VRM（自动识别 humanoid 骨骼，缺的会补占位骨）",
         "hint_uemodel2pmx": "UEFormat(.uemodel) 转成 MMD 的 PMX（贴图按同目录的 MI_*.json 关联）",
         "hint_pmx2uemodel": "PMX 转成 UEFormat(.uemodel)，可给 FortnitePorting / UE 插件用",
         "hint_psk2pmx": "Unreal ActorX 的 .psk / .pskx 转成 MMD 的 PMX（骨骼转日文标准名、带表情）",
+        "hint_xps2pmx": "XPS / XNALara 的 .xps 转成 MMD 的 PMX（换轴 + 骨骼转日文标准名 + 贴图原样带走）",
         "hint_pmx2fbx": "PMX 转成 ASCII FBX 7.4（贴图引用相对路径 textures/…）",
         "hint_pmx2psk": "PMX 转成 Unreal ActorX 的 .psk / .pskx（骨骼名取英文，带表情与附加 UV）",
         "hint_check": "只读取 PMX 做结构校验和预览，不输出文件",
@@ -248,13 +252,20 @@ LANG = {
         "opt_psk_height": "PSK 目标身高",
         "opt_psk_tex": "PMX → psk 时把贴图导出到 textures 文件夹",
         "note_psk": "（.psk / .pskx 是 Unreal 的 ActorX 交换格式，FModel / UEViewer 从 UE 资源导出。psk→PMX 会自动换轴成 MMD 的 Y-up、按身高归一到 20 单位，贴图按材质名在源文件同目录找同名图片；PMX→psk 反向同样换轴一次，按上面的身高折算成厘米。.pskx 是带法线/顶点色/附加 UV/表情块的扩展格式，标准 .psk 只留顶点/面/材质/骨骼/权重）",
+        "tab_xps": "XPS 选项",
+        "opt_xps_jp": "骨骼转成 MMD 标准日文名（英文原名写在骨骼英文名里）",
+        "opt_xps_ik": "补 MMD 足 IK 骨（足ＩＫ / つま先ＩＫ）",
+        "opt_xps_double": "材质默认两面描画（头发 / 衣服这类薄片不会漏背面）",
+        "opt_xps_unused": "unused 占位骨放进独立的「unused」表示枠（不删除，权重不受影响）",
+        "opt_xps_fbx": "XPS → PMX 时同时导出 FBX 文件",
+        "note_xps": "（.xps 是 XNALara / XPS 的模型格式，现在流通的基本都是 XPS 的 Generic Item 2 变体。xps→PMX 会换轴成 MMD 的 Y-up、按身高归一到 20 单位；XPS 的 +Z 是正面、MMD 的正面是 -Z，所以只把 Z 取反。骨骼按规则转成 MMD 标准日文名，贴图按网格记录的漫反射贴图在同目录找，原样拷进 textures/ 且**不去 alpha**——XPS 的 alpha 就是头发 / 睫毛的透明度，和 UE 贴图的 alpha 含义正好相反。DDS 也直接拷：MMD 本体支持 .dds 贴图，不需要转码）",
         "tab_output": "输出",
         "opt_subfolder": "输出到同名子文件夹（文件名_日期_序号）",
         "zoom_auto": "自动（跟随系统）",
         "msg_title": "提示",
-        "msg_pick": "请先把 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx 文件拖进窗口，或点击拖放区域选择文件。",
+        "msg_pick": "请先把 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx / .xps 文件拖进窗口，或点击拖放区域选择文件。",
         "msg_unsupported": "不支持的文件",
-        "msg_unsupported_body": "无法识别：\n{files}\n\n支持 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx",
+        "msg_unsupported_body": "无法识别：\n{files}\n\n支持 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx / .xps",
         "msg_mismatch": "所选文件与当前任务方向不匹配。",
         "msg_no_outdir": "还没有输出目录，先转换一次吧。",
         "msg_open_fail": "打开失败",
@@ -271,12 +282,12 @@ LANG = {
         "dlg_out": "选择输出目录",
     },
     "zh_TW": {
-        "app_title": "模型轉換器 · FBX / VRM / PMX / PSK",
-        "subtitle": "FBX / unitypackage / VRM / PMX / uemodel / PSK 互轉 · 純 Python，不需要 Blender / FBX SDK / Unity",
+        "app_title": "模型轉換器 · FBX / VRM / PMX / PSK / XPS",
+        "subtitle": "FBX / unitypackage / VRM / PMX / uemodel / PSK / XPS 互轉 · 純 Python，不需要 Blender / FBX SDK / Unity",
         "zoom_label": "介面縮放",
         "lang_label": "語言",
         "drop_hint": "把模型檔案拖到這裡，也可以點擊此區域選擇檔案",
-        "drop_formats": "支援 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx",
+        "drop_formats": "支援 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx / .xps",
         "task": "任務",
         "task_auto": "自動（依副檔名）",
         "task_fbx2pmx": "FBX / unitypackage → PMX",
@@ -285,16 +296,18 @@ LANG = {
         "task_uemodel2pmx": "uemodel → PMX",
         "task_pmx2uemodel": "PMX → uemodel",
         "task_psk2pmx": "psk / pskx → PMX",
+        "task_xps2pmx": "XPS → PMX",
         "task_pmx2fbx": "PMX → FBX",
         "task_pmx2psk": "PMX → psk / pskx",
         "task_check": "PMX 僅校驗 + 預覽",
-        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM　·　.uemodel → PMX　·　.psk/.pskx → PMX",
+        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM　·　.uemodel → PMX　·　.psk/.pskx → PMX　·　.xps → PMX",
         "hint_fbx2pmx": "FBX / unitypackage 轉成 MMD 的 PMX",
         "hint_vrm2pmx": "VRM 0.x / 1.0 轉成 MMD 的 PMX（貼圖會匯出到同目錄）",
         "hint_pmx2vrm": "PMX 轉成 VRM（自動識別 humanoid 骨骼，缺的會補佔位骨）",
         "hint_uemodel2pmx": "UEFormat(.uemodel) 轉成 MMD 的 PMX（貼圖依同目錄的 MI_*.json 關聯）",
         "hint_pmx2uemodel": "PMX 轉成 UEFormat(.uemodel)，可給 FortnitePorting / UE 外掛用",
         "hint_psk2pmx": "Unreal ActorX 的 .psk / .pskx 轉成 MMD 的 PMX（骨骼轉日文標準名、含表情）",
+        "hint_xps2pmx": "XPS / XNALara 的 .xps 轉成 MMD 的 PMX（換軸 + 骨骼轉日文標準名 + 貼圖原樣帶走）",
         "hint_pmx2fbx": "PMX 轉成 ASCII FBX 7.4（貼圖是相對路徑 textures/…）",
         "hint_pmx2psk": "PMX 轉成 Unreal ActorX 的 .psk / .pskx（骨骼用英文名，含表情與附加 UV）",
         "hint_check": "只讀取 PMX 做結構校驗和預覽，不輸出檔案",
@@ -394,13 +407,20 @@ LANG = {
         "opt_psk_height": "PSK 目標身高",
         "opt_psk_tex": "PMX → psk 時把貼圖匯出到 textures 資料夾",
         "note_psk": "（.psk / .pskx 是 Unreal 的 ActorX 交換格式，FModel / UEViewer 從 UE 資源匯出。psk→PMX 會自動換軸成 MMD 的 Y-up、按身高歸一到 20 單位，貼圖依材質名在來源檔同目錄找同名圖片；PMX→psk 反向同樣換軸一次，按上面的身高折算成公分。.pskx 是帶法線/頂點色/附加 UV/表情區塊的擴充格式，標準 .psk 只留頂點/面/材質/骨骼/權重）",
+        "tab_xps": "XPS 選項",
+        "opt_xps_jp": "骨骼轉成 MMD 標準日文名（英文原名寫在骨骼英文名裡）",
+        "opt_xps_ik": "補 MMD 足 IK 骨（足ＩＫ / つま先ＩＫ）",
+        "opt_xps_double": "材質預設兩面描畫（頭髮 / 衣服這類薄片不會漏背面）",
+        "opt_xps_unused": "unused 佔位骨放進獨立的「unused」表示枠（不刪除，權重不受影響）",
+        "opt_xps_fbx": "XPS → PMX 時同時匯出 FBX 檔案",
+        "note_xps": "（.xps 是 XNALara / XPS 的模型格式，現在流通的基本都是 XPS 的 Generic Item 2 變體。xps→PMX 會換軸成 MMD 的 Y-up、按身高歸一到 20 單位；XPS 的 +Z 是正面、MMD 的正面是 -Z，所以只把 Z 取反。骨骼按規則轉成 MMD 標準日文名，貼圖依網格記錄的漫反射貼圖在同目錄找，原樣拷進 textures/ 且**不去 alpha**——XPS 的 alpha 就是頭髮 / 睫毛的透明度，和 UE 貼圖的 alpha 含義正好相反。DDS 也直接拷：MMD 本體支援 .dds 貼圖，不需要轉碼）",
         "tab_output": "輸出",
         "opt_subfolder": "輸出到同名子資料夾（檔名_日期_序號）",
         "zoom_auto": "自動（跟隨系統）",
         "msg_title": "提示",
-        "msg_pick": "請先把 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx 檔案拖進視窗，或點擊拖放區域選擇檔案。",
+        "msg_pick": "請先把 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx / .xps 檔案拖進視窗，或點擊拖放區域選擇檔案。",
         "msg_unsupported": "不支援的檔案",
-        "msg_unsupported_body": "無法辨識：\n{files}\n\n支援 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx",
+        "msg_unsupported_body": "無法辨識：\n{files}\n\n支援 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx / .xps",
         "msg_mismatch": "所選檔案與目前任務方向不符。",
         "msg_no_outdir": "還沒有輸出目錄，先轉換一次吧。",
         "msg_open_fail": "開啟失敗",
@@ -417,12 +437,12 @@ LANG = {
         "dlg_out": "選擇輸出目錄",
     },
     "en": {
-        "app_title": "Model Converter · FBX / VRM / PMX / PSK",
-        "subtitle": "FBX / unitypackage / VRM / PMX / uemodel / PSK conversion · Pure Python, no Blender / FBX SDK / Unity",
+        "app_title": "Model Converter · FBX / VRM / PMX / PSK / XPS",
+        "subtitle": "FBX / unitypackage / VRM / PMX / uemodel / PSK / XPS conversion · Pure Python, no Blender / FBX SDK / Unity",
         "zoom_label": "UI scale",
         "lang_label": "Language",
         "drop_hint": "Drop model files here, or click to pick files",
-        "drop_formats": "Supports .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx",
+        "drop_formats": "Supports .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx / .xps",
         "task": "Task",
         "task_auto": "Auto (by extension)",
         "task_fbx2pmx": "FBX / unitypackage → PMX",
@@ -431,16 +451,18 @@ LANG = {
         "task_uemodel2pmx": "uemodel → PMX",
         "task_pmx2uemodel": "PMX → uemodel",
         "task_psk2pmx": "psk / pskx → PMX",
+        "task_xps2pmx": "XPS → PMX",
         "task_pmx2fbx": "PMX → FBX",
         "task_pmx2psk": "PMX → psk / pskx",
         "task_check": "PMX check + preview only",
-        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM　·　.uemodel → PMX　·　.psk/.pskx → PMX",
+        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM　·　.uemodel → PMX　·　.psk/.pskx → PMX　·　.xps → PMX",
         "hint_fbx2pmx": "Convert FBX / unitypackage into MMD PMX",
         "hint_vrm2pmx": "Convert VRM 0.x / 1.0 into MMD PMX (textures exported alongside)",
         "hint_pmx2vrm": "Convert PMX into VRM (auto-detect humanoid bones, fill missing with placeholders)",
         "hint_uemodel2pmx": "Convert UEFormat (.uemodel) into MMD PMX (textures linked via the sibling MI_*.json)",
         "hint_pmx2uemodel": "Convert PMX into UEFormat (.uemodel) for FortnitePorting / UE plugins",
         "hint_psk2pmx": "Convert Unreal ActorX .psk / .pskx into MMD PMX (standard JP bone names, morphs included)",
+        "hint_xps2pmx": "Convert XPS / XNALara .xps into MMD PMX (axis swap + standard JP bone names + textures copied over)",
         "hint_pmx2fbx": "Convert PMX into ASCII FBX 7.4 (textures referenced as relative textures/…)",
         "hint_pmx2psk": "Convert PMX into Unreal ActorX .psk / .pskx (English bone names, morphs and extra UVs)",
         "hint_check": "Only read PMX for structure check and preview, no output file",
@@ -540,13 +562,20 @@ LANG = {
         "opt_psk_height": "PSK target height",
         "opt_psk_tex": "Export textures into a textures folder when converting PMX → psk",
         "note_psk": "(.psk / .pskx is Unreal's ActorX exchange format exported by FModel / UEViewer. psk → PMX re-maps axes to MMD's Y-up, normalises the height to 20 units and matches textures by material name next to the source; PMX → psk swaps axes once again and scales to the height above in centimetres. .pskx is the extended flavour carrying normals / vertex colors / extra UVs / morphs, while a standard .psk keeps only points, faces, materials, bones and weights)",
+        "tab_xps": "XPS",
+        "opt_xps_jp": "Rename bones to MMD standard Japanese names (original English kept as the English name)",
+        "opt_xps_ik": "Add MMD leg IK bones (足ＩＫ / つま先ＩＫ)",
+        "opt_xps_double": "Make materials two-sided by default (hair / clothing sheets no longer show holes)",
+        "opt_xps_unused": "Put `unused` placeholder bones into a separate \"unused\" display frame (kept, weights untouched)",
+        "opt_xps_fbx": "Also export an FBX file when converting XPS → PMX",
+        "note_xps": "(.xps is the XNALara / XPS model format; almost everything in circulation today is XPS's Generic Item 2 variant. xps → PMX re-maps axes to MMD's Y-up and normalises the height to 20 units; XPS has +Z as its front while MMD's front is -Z, so only Z is negated. Bones are renamed to MMD standard Japanese names by rule, and the diffuse texture recorded per mesh is looked up next to the source and copied into textures/ **with alpha kept** — in XPS the alpha channel really is hair / eyelash transparency, the opposite of Unreal textures. DDS is copied as-is too: MMD itself supports .dds textures, so no transcoding is needed)",
         "tab_output": "Output",
         "opt_subfolder": "Write into a same-named subfolder (name_date_001)",
         "zoom_auto": "Auto (follow system)",
         "msg_title": "Note",
-        "msg_pick": "Please drop .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx files into the window, or click the drop area to pick files.",
+        "msg_pick": "Please drop .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx / .xps files into the window, or click the drop area to pick files.",
         "msg_unsupported": "Unsupported file",
-        "msg_unsupported_body": "Unrecognized:\n{files}\n\nSupports .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx",
+        "msg_unsupported_body": "Unrecognized:\n{files}\n\nSupports .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx / .xps",
         "msg_mismatch": "Selected files do not match the current task direction.",
         "msg_no_outdir": "No output folder yet — convert something first.",
         "msg_open_fail": "Failed to open",
@@ -563,12 +592,12 @@ LANG = {
         "dlg_out": "Select output folder",
     },
     "ja": {
-        "app_title": "モデル変換 · FBX / VRM / PMX / PSK",
-        "subtitle": "FBX / unitypackage / VRM / PMX / uemodel / PSK 相互変換 · 純 Python、Blender / FBX SDK / Unity 不要",
+        "app_title": "モデル変換 · FBX / VRM / PMX / PSK / XPS",
+        "subtitle": "FBX / unitypackage / VRM / PMX / uemodel / PSK / XPS 相互変換 · 純 Python、Blender / FBX SDK / Unity 不要",
         "zoom_label": "表示倍率",
         "lang_label": "言語",
         "drop_hint": "ここにモデルをドロップ（クリックでも可）",
-        "drop_formats": "対応 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx",
+        "drop_formats": "対応 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx / .xps",
         "task": "タスク",
         "task_auto": "自動（拡張子で判定）",
         "task_fbx2pmx": "FBX / unitypackage → PMX",
@@ -577,16 +606,18 @@ LANG = {
         "task_uemodel2pmx": "uemodel → PMX",
         "task_pmx2uemodel": "PMX → uemodel",
         "task_psk2pmx": "psk / pskx → PMX",
+        "task_xps2pmx": "XPS → PMX",
         "task_pmx2fbx": "PMX → FBX",
         "task_pmx2psk": "PMX → psk / pskx",
         "task_check": "PMX 検証＋プレビューのみ",
-        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM　·　.uemodel → PMX　·　.psk/.pskx → PMX",
+        "hint_auto": ".fbx/.unitypackage → PMX　·　.vrm → PMX　·　.pmx → VRM　·　.uemodel → PMX　·　.psk/.pskx → PMX　·　.xps → PMX",
         "hint_fbx2pmx": "FBX / unitypackage を MMD の PMX に変換",
         "hint_vrm2pmx": "VRM 0.x / 1.0 を MMD の PMX に変換（テクスチャは同フォルダへ）",
         "hint_pmx2vrm": "PMX を VRM に変換（humanoid ボーン自動判定、欠損はダミー骨で補完）",
         "hint_uemodel2pmx": "UEFormat(.uemodel) を MMD の PMX に変換（テクスチャは同フォルダの MI_*.json から関連付け）",
         "hint_pmx2uemodel": "PMX を UEFormat(.uemodel) に変換（FortnitePorting / UE プラグイン向け）",
         "hint_psk2pmx": "Unreal ActorX の .psk / .pskx を MMD の PMX に変換（ボーンは日本語標準名・表情付き）",
+        "hint_xps2pmx": "XPS / XNALara の .xps を MMD の PMX に変換（軸変換＋ボーンは日本語標準名＋テクスチャはそのまま）",
         "hint_pmx2fbx": "PMX を ASCII FBX 7.4 に変換（テクスチャは textures/… の相対参照）",
         "hint_pmx2psk": "PMX を Unreal ActorX の .psk / .pskx に変換（ボーンは英語名、表情と追加 UV 付き）",
         "hint_check": "PMX を読むだけで構造検証とプレビュー、出力はしません",
@@ -686,13 +717,20 @@ LANG = {
         "opt_psk_height": "PSK の目標身長",
         "opt_psk_tex": "PMX → psk のときテクスチャを textures フォルダへ書き出す",
         "note_psk": "（.psk / .pskx は Unreal の ActorX 交換形式で、FModel / UEViewer が UE アセットから書き出します。psk→PMX は MMD の Y-up に軸変換し身長を 20 単位に正規化、テクスチャはマテリアル名と同名の画像をソースと同じフォルダから探します。PMX→psk は逆向きに同じ軸変換をもう一度かけ、上の身長（cm）に換算します。.pskx は法線/頂点色/追加 UV/表情チャンクを持つ拡張版で、標準 .psk は頂点・面・マテリアル・ボーン・ウェイトだけです）",
+        "tab_xps": "XPS",
+        "opt_xps_jp": "ボーンを MMD 標準の日本語名にする（元の英名は英語名欄に残します）",
+        "opt_xps_ik": "MMD の足 IK ボーンを追加（足ＩＫ / つま先ＩＫ）",
+        "opt_xps_double": "マテリアルを既定で両面描画にする（髪や服の薄い板が裏抜けしない）",
+        "opt_xps_unused": "unused プレースホルダ骨を独立した「unused」表示枠へ（削除はせず、ウェイトにも影響なし）",
+        "opt_xps_fbx": "XPS → PMX のときに FBX も同時出力",
+        "note_xps": "（.xps は XNALara / XPS のモデル形式で、現在出回っているものはほぼ XPS の Generic Item 2 変種です。xps→PMX は MMD の Y-up に軸変換し身長を 20 単位に正規化します。XPS は +Z が正面、MMD は -Z が正面なので Z だけ反転します。ボーンは規則で MMD 標準の日本語名に変換し、テクスチャはメッシュごとに記録されたディフューズをソースと同じフォルダから探して textures/ へそのままコピーし、**アルファは外しません**——XPS のアルファは髪・まつ毛の透過度そのもので、UE テクスチャの alpha とは意味が逆だからです。DDS もそのままコピーします：MMD 本体が .dds テクスチャに対応しているため変換不要です）",
         "tab_output": "出力",
         "opt_subfolder": "同名のサブフォルダに出力（ファイル名_日付_連番）",
         "zoom_auto": "自動（システムに合わせる）",
         "msg_title": "注意",
-        "msg_pick": ".fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx ファイルをウィンドウへドロップするか、ドロップ領域をクリックして選択してください。",
+        "msg_pick": ".fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx / .xps ファイルをウィンドウへドロップするか、ドロップ領域をクリックして選択してください。",
         "msg_unsupported": "非対応のファイル",
-        "msg_unsupported_body": "認識できません：\n{files}\n\n対応：.fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx",
+        "msg_unsupported_body": "認識できません：\n{files}\n\n対応：.fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx / .xps",
         "msg_mismatch": "選択したファイルは現在のタスク方向と一致しません。",
         "msg_no_outdir": "まだ出力フォルダがありません。一度変換してください。",
         "msg_open_fail": "開けませんでした",
@@ -761,6 +799,7 @@ def refresh_choices():
                     (t("task_uemodel2pmx"), "uemodel2pmx"),
                     (t("task_pmx2uemodel"), "pmx2uemodel"),
                     (t("task_psk2pmx"), "psk2pmx"),
+                    (t("task_xps2pmx"), "xps2pmx"),
                     (t("task_pmx2fbx"), "pmx2fbx"),
                     (t("task_pmx2psk"), "pmx2psk"),
                     (t("task_check"), "check")]
@@ -942,12 +981,14 @@ def classify(path):
         return "uemodel"
     if ext in (".psk", ".pskx"):
         return "psk"
+    if ext == ".xps":
+        return "xps"
     return "unknown"
 
 
 AUTO_TASK = {"fbx": "fbx2pmx", "unitypackage": "fbx2pmx",
              "vrm": "vrm2pmx", "pmx": "pmx2vrm",
-             "uemodel": "uemodel2pmx", "psk": "psk2pmx"}
+             "uemodel": "uemodel2pmx", "psk": "psk2pmx", "xps": "xps2pmx"}
 
 
 def find_fbx(root):
@@ -1217,6 +1258,12 @@ class ConverterApp:
         self.var_psk_out = tk.StringVar(value=PSK_OUTS[0])
         self.var_psk_height = tk.StringVar(value="160")
         self.var_psk_tex = tk.BooleanVar(value=True)
+        # XPS / XNALara
+        self.var_xps_jp = tk.BooleanVar(value=True)
+        self.var_xps_ik = tk.BooleanVar(value=True)
+        self.var_xps_double = tk.BooleanVar(value=True)
+        self.var_xps_unused = tk.BooleanVar(value=True)
+        self.var_xps_fbx = tk.BooleanVar(value=False)
         self.var_subfolder = tk.BooleanVar(value=True)
         self._task_code = "auto"             # 任务方向内部代号（与语言无关）
         self.var_lang = tk.StringVar(value="zh_CN")
@@ -1567,6 +1614,21 @@ class ConverterApp:
         self.lbl_psk_note.pack(fill="x", padx=px(14), pady=(px(6), px(12)))
         tab_p.bind("<Configure>",
                    lambda e: self.lbl_psk_note.configure(
+                       wraplength=max(px(150), e.width - px(28))))
+
+        # XPS 选项（XNALara / XPS，.xps）
+        tab_x = self._tab(nb, t("tab_xps"))
+        self._bigcheck(tab_x, t("opt_xps_jp"), self.var_xps_jp)
+        self._bigcheck(tab_x, t("opt_xps_ik"), self.var_xps_ik)
+        self._bigcheck(tab_x, t("opt_xps_double"), self.var_xps_double)
+        self._bigcheck(tab_x, t("opt_xps_unused"), self.var_xps_unused)
+        self._bigcheck(tab_x, t("opt_xps_fbx"), self.var_xps_fbx)
+        self.lbl_xps_note = tk.Label(tab_x, text=t("note_xps"), font=F_SUB,
+                                     bg=CARD, fg=MUTED, justify="left",
+                                     anchor="w")
+        self.lbl_xps_note.pack(fill="x", padx=px(14), pady=(px(6), px(12)))
+        tab_x.bind("<Configure>",
+                   lambda e: self.lbl_xps_note.configure(
                        wraplength=max(px(150), e.width - px(28))))
 
         # 输出
@@ -1989,6 +2051,7 @@ class ConverterApp:
             "uemodel2pmx": t("hint_uemodel2pmx"),
             "pmx2uemodel": t("hint_pmx2uemodel"),
             "psk2pmx": t("hint_psk2pmx"),
+            "xps2pmx": t("hint_xps2pmx"),
             "pmx2fbx": t("hint_pmx2fbx"),
             "pmx2psk": t("hint_pmx2psk"),
             "check": t("hint_check"),
@@ -2108,6 +2171,11 @@ class ConverterApp:
                 else PSK_OUTS[0])
             self.var_psk_height.set(s.get("psk_height", "160"))
             self.var_psk_tex.set(bool(s.get("psk_tex", True)))
+            self.var_xps_jp.set(bool(s.get("xps_jp", True)))
+            self.var_xps_ik.set(bool(s.get("xps_ik", True)))
+            self.var_xps_double.set(bool(s.get("xps_double", True)))
+            self.var_xps_unused.set(bool(s.get("xps_unused", True)))
+            self.var_xps_fbx.set(bool(s.get("xps_fbx", False)))
             self.var_subfolder.set(bool(s.get("subfolder", True)))
             code = s.get("task", "auto")
             if code not in {c for _, c in TASK_CHOICES}:
@@ -2165,6 +2233,11 @@ class ConverterApp:
                            "psk_out": psk_out_code_of(self.var_psk_out.get()),
                            "psk_height": self.var_psk_height.get(),
                            "psk_tex": bool(self.var_psk_tex.get()),
+                           "xps_jp": self.var_xps_jp.get(),
+                           "xps_ik": self.var_xps_ik.get(),
+                           "xps_double": self.var_xps_double.get(),
+                           "xps_unused": self.var_xps_unused.get(),
+                           "xps_fbx": self.var_xps_fbx.get(),
                            "subfolder": bool(self.var_subfolder.get()),
                            "split": getattr(self, "_split", 0.6),
                            "vsplit": getattr(self, "_vsplit", None)},
@@ -2388,6 +2461,7 @@ class ConverterApp:
                 "uemodel2pmx": ("uemodel",),
                 "pmx2uemodel": ("pmx",),
                 "psk2pmx": ("psk",),
+                "xps2pmx": ("xps",),
                 "pmx2fbx": ("pmx",),
                 "pmx2psk": ("pmx",),
                 "check": ("pmx",)}[task]
@@ -2631,6 +2705,11 @@ class ConverterApp:
             "psk_out": psk_out_code_of(self.var_psk_out.get()),
             "psk_height": self.var_psk_height.get(),
             "psk_tex": bool(self.var_psk_tex.get()),
+            "xps_jp": bool(self.var_xps_jp.get()),
+            "xps_ik": bool(self.var_xps_ik.get()),
+            "xps_double": bool(self.var_xps_double.get()),
+            "xps_unused": bool(self.var_xps_unused.get()),
+            "xps_fbx": bool(self.var_xps_fbx.get()),
         }
 
     def _run(self, files):
@@ -2720,6 +2799,9 @@ class ConverterApp:
 
         if task == "psk2pmx":
             return self._do_psk2pmx(path, folder, cfg)
+
+        if task == "xps2pmx":
+            return self._do_xps2pmx(path, folder, cfg)
 
         if task == "pmx2fbx":
             return self._do_pmx2fbx(path, folder, cfg)
@@ -2909,6 +2991,42 @@ class ConverterApp:
                              make_ik=cfg.get("psk_ik", True),
                              export_morphs=cfg.get("psk_morphs", True),
                              remove_alpha=cfg.get("psk_alpha", True),
+                             force_double_sided=cfg.get("force_two_sided",
+                                                        False))
+        q.put(("log", "已写出 %s（%s）"
+               % (os.path.basename(out), human(st["bytes"])), "ok"))
+        if fbx:
+            if st.get("fbx"):
+                q.put(("log", "同时导出 %s（%s）"
+                       % (os.path.basename(fbx), human(st["fbx"]["bytes"])),
+                       "ok"))
+            else:
+                q.put(("log", "FBX 导出失败：%s"
+                       % (st.get("fbx_error") or "未知原因"), "err"))
+        self._report(out, folder, cfg)
+        made = [out]
+        if fbx and os.path.isfile(fbx):
+            made.append(fbx)
+        return made
+
+    # -- XPS / XNALara → PMX -----------------------------------------------
+    def _do_xps2pmx(self, path, folder, cfg):
+        q = self.q
+        stem = os.path.splitext(os.path.basename(path))[0]
+        out = os.path.join(folder, stem + ".pmx")
+        fbx = os.path.join(folder, stem + ".fbx") if cfg.get("xps_fbx") else None
+        q.put(("log", ""))
+        q.put(("log", "→ %s" % os.path.basename(path), "head"))
+        q.put(("log", "读取 XPS…", "info"))
+        st = xps2pmx.convert(path, out, scale_mode=cfg["scale"],
+                             log=self._logfn(), name=stem,
+                             fbx_path=fbx,
+                             jp_bones=cfg.get("xps_jp", True),
+                             make_ik=cfg.get("xps_ik", True),
+                             hide_unused=cfg.get("xps_unused", True),
+                             all_double_sided=cfg.get("xps_double", True),
+                             center=cfg.get("center", True),
+                             enable_edge=cfg.get("edge", False),
                              force_double_sided=cfg.get("force_two_sided",
                                                         False))
         q.put(("log", "已写出 %s（%s）"
@@ -3165,7 +3283,7 @@ class ConverterApp:
 
         def job():
             try:
-                if kind in ("vrm", "pmx"):
+                if kind in ("vrm", "pmx", "xps"):
                     mesh = model_preview.load_preview(first, with_textures=False)
                     self.q.put(("mesh", mesh, first))     # 立刻出正面（基色）
                     if mesh.load_textures():

@@ -1,6 +1,6 @@
 # 模型轉換器（純 Python）
 
-把 `.fbx`、`.unitypackage`、`.vrm`、`.pmx`、`.uemodel`（UEFormat）互相轉換，並能把 `.psk` / `.pskx`（Unreal ActorX）轉成 PMX，**全部用 Python 標準庫實作**。
+把 `.fbx`、`.unitypackage`、`.vrm`、`.pmx`、`.uemodel`（UEFormat）互相轉換，並能把 `.psk` / `.pskx`（Unreal ActorX）和 `.xps`（XNALara / XPS）轉成 PMX，**全部用 Python 標準庫實作**。
 不需要 Blender / Autodesk FBX SDK / Unity 3D，也不需要 mmd_tools / UniVRM 等外掛。直接讀寫二進制格式，拖進視窗即可轉換。
 
 [English](README.md) | [簡體中文](README_SC.md) | [繁體中文](README_TC.md) | [日本語](README_JP.md)
@@ -24,6 +24,7 @@
 | uemodel（UEFormat） → PMX | 讀公開的 UEFormat `.uemodel`（v1–v10）；可同時匯出一份 ASCII FBX |
 | PMX → uemodel（UEFormat） | 寫出 UEFormat `.uemodel`（預設 v9，可選 v10），可交給 UE / FModel 生態 |
 | PSK / PSKX（Unreal ActorX） → PMX | 讀 Unreal 的 `.psk`（`FACE0000`）/ `.pskx`（`FACE3200`），帶頂點權重、MRPH 頂點表情、附加 UV |
+| XPS / XNALara → PMX | 讀 XPS 的 Generic Item 2 二進制 `.xps`（也支援舊版 XNALara 二進制）；自動換軸、骨骼轉日文標準名、貼圖原樣帶走 |
 | PMX → FBX | 寫出 ASCII FBX 7.4（含骨骼、權重、表情 Shape、貼圖相對路徑） |
 | PMX → psk / pskx | 寫出 Unreal ActorX 格式；`.pskx` 帶法線/頂點色/附加 UV/表情，`.psk` 僅標準區塊 |
 | PMX → 僅校驗 + 預覽 | 唯讀結構校驗，不輸出檔案 |
@@ -42,14 +43,19 @@
   也就是 MMD 裡的「不使用 toon」。
 - **多語言介面**：右上角可切換 簡體中文 / 繁體中文 / English / 日本語，選擇記憶到設定。
 - **高分屏友善**：依系統 DPI 自動縮放，右上角「介面縮放」可手動指定倍率。
-- **分頁式選項**：選項區按「通用 / FBX / VRM / UE / 輸出」分為五個標籤頁，易於擴充。
+- **分頁式選項**：選項區按「通用 / FBX / VRM / UE / PSK / XPS / 輸出」分為七個標籤頁，易於擴充。
 - **自動繞序判定**：三角形繞序用「幾何面法線 vs 頂點法線」投票自動判定，
   避免出現大面積鏤空 / 輪廓線糊成黑塊。
-- **貼圖處理**：PNG/JPEG 直接透傳，BMP/TGA 現轉 PNG，嵌入 GLB 或匯出到 PMX 同目錄。
+- **貼圖處理**：PNG/JPEG 直接透傳，BMP/TGA 現轉 PNG，`.dds` 原樣拷貝（MMD 本體支援），嵌入 GLB 或匯出到 PMX 同目錄。
 - **PSK / PSKX 直讀**：Unreal ActorX 的 `.psk`（`FACE0000`）與 `.pskx`（`FACE3200`）都能讀，
   頂點權重、MRPH 頂點表情、`EXTRAUVS*` 附加 UV 一併帶過來；Bip001 這套 3dsMax Biped
   骨名自動對應成 MMD 標準日文名（`センター` / `上半身` / `左足ＩＫ` …），
   **英文原名寫進骨骼的英文名備註欄位**，兩邊都不丟。
+- **XPS / XNALara 支援**：讀 XPS 的 Generic Item 2 二進制（魔數 `323232`、`XNAaraL` 頭）與舊版 XNALara 二進制，
+  含版本 3 才有的「每頂點權重根數可變」。自動換軸成 MMD 的座標系（XPS 是 `+X` 左 / `+Y` 上 / `+Z` 正前，所以只把 Z 取反），
+  `spine lower` / `arm left elbow` / `leg right knee` 這類骨名按規則轉成 MMD 標準日文名，`unused …` 佔位骨**不刪除**、
+  而是放進獨立的 `unused` 表示枠（權重不受影響）；每個網格的漫反射貼圖拷進 `textures/` 且**保留 alpha**——
+  XPS 的 alpha 就是頭髮 / 睫毛的透明度。`.dds` 原樣拷貝（MMD 本體支援 `.dds`），內建預覽能解 DXT1 / DXT3 / DXT5。
 
 ---
 
@@ -73,9 +79,10 @@ Model-to-PMX/
 │   ├── fbx_reader.py            #   二進制 FBX 7.x 解析函式庫
 │   ├── fbx_probe.py             #   探查 FBX 結構（網格/骨骼/蒙皮清單）
 │   ├── pmxio.py                 #   完整 PMX 2.0 讀寫（含表情/IK/付與/剛體/關節）
-│   ├── vrmio.py                 #   GLB/glTF 容器讀寫 + PNG 編碼 + BMP/TGA 解碼
+│   ├── vrmio.py                 #   GLB/glTF 容器讀寫 + PNG 編碼 + BMP/TGA/DDS(DXT1/3/5) 解碼
 │   ├── uemodelio.py             #   UEFormat .uemodel 讀寫（v1–v10）
 │   ├── pskio.py                 #   Unreal ActorX .psk / .pskx 讀取
+│   ├── xpsio.py                 #   XPS / XNALara .xps 讀取（Generic Item 2 + 舊版二進制）
 │   ├── fbxout.py                #   ASCII FBX 7.4 寫出器（「同時匯出 FBX」用）
 │   └── unitypackage_unpack.py   #   解包 .unitypackage（gzip tar）
 │
@@ -87,6 +94,7 @@ Model-to-PMX/
 │   ├── pmx2uemodel.py           #   PMX → uemodel（UEFormat）
 │   ├── pmx2psk.py               #   PMX → psk / pskx（Unreal ActorX）
 │   ├── psk2pmx.py               #   PSK / PSKX（Unreal ActorX）→ PMX
+│   ├── xps2pmx.py               #   XPS / XNALara → PMX
 │   └── pmx_check.py             #   PMX 校驗 + 軟體渲染預覽圖
 │
 ├── gfx/
@@ -104,7 +112,7 @@ Model-to-PMX/
 ### 方式一：圖形介面（推薦）
 
 1. 輸入執行 `python main.py`
-2. 把 `.fbx` / `.unitypackage` / `.vrm` / `.pmx` / `.uemodel` / `.psk` / `.pskx` 檔案**拖進視窗任意位置**，或點擊拖放區選擇檔案。
+2. 把 `.fbx` / `.unitypackage` / `.vrm` / `.pmx` / `.uemodel` / `.psk` / `.pskx` / `.xps` 檔案**拖進視窗任意位置**，或點擊拖放區選擇檔案。
    **拖入只會載入 + 出預覽，不會自動轉換**；確認任務方向與選項後，點「開始轉換」才會真正執行。
 3. 拖放區下方會出現**已選擇的檔案清單**（檔名 / 格式 / 大小），一眼就能看清這次要轉哪些：
    - 繼續拖入是**追加**到清單，重複的檔案依絕對路徑自動去重；
@@ -124,7 +132,8 @@ Model-to-PMX/
 - **右下角渲染後端**：顯示目前用的是 `Pillow` 還是純 Python，以及上一幀耗時（毫秒）
 - **右上角「語言」**：簡體中文 / 繁體中文 / English / 日本語（預覽工具條也會跟著切）
 - **右上角「介面縮放」**：自動跟隨系統 DPI，或手動指定倍率
-- **選項分頁**：「通用 / FBX / VRM / UE / 輸出」五個標籤頁
+- **選項分頁**：「通用 / FBX / VRM / UE / PSK / XPS / 輸出」七個標籤頁
+- **XPS 選項頁**：把骨骼改成 MMD 標準日文名、按腿部骨鏈補足 IK 骨、材質預設雙面描繪、把 `unused` 佔位骨歸入獨立的表示枠，以及「同時匯出一份 FBX」
 - **UE 選項頁**：任務選「uemodel → PMX」時，勾上「同時匯出 FBX 檔案」就會在 PMX 旁邊多寫一份 ASCII FBX；這一頁還管目標身高（cm）與透明通道處理
 - **FBX 選項頁**：管三件事，改完會立刻影響預覽和「開始轉換」的結果
   - **貼圖透明通道**：`保留`（原樣）/ `自動判定（推薦）`/ `全部去除`。
@@ -191,6 +200,13 @@ python convert/pmx2uemodel.py "model.pmx" -o "model.uemodel" --version 10
 # 骨名預設轉成 MMD 標準日文名（英文原名寫進英文名備註）；貼圖依材質名在源目錄自動尋找
 python convert/psk2pmx.py "model.psk" -o "model.pmx"
 python convert/psk2pmx.py "model.pskx" -o "model.pmx" --raw-bone-names --no-ik
+
+# XPS / XNALara → PMX
+# 預設自動換軸、骨名轉 MMD 標準日文名（英文原名寫進英文名備註）；每個網格的漫反射貼圖拷進 textures/
+python convert/xps2pmx.py "model.xps" -o "model.pmx"
+python convert/xps2pmx.py "model.xps" -o "model.pmx" --raw-bone-names --no-ik
+python convert/xps2pmx.py "model.xps" -o "model.pmx" --show-unused --one-sided
+python convert/xps2pmx.py "model.xps" -o "model.pmx" --fbx
 
 # PMX → FBX（ASCII 7.4，含骨骼/權重/表情/貼圖相對路徑）
 python convert/fbxout.py "model.pmx" -o "model.fbx"
@@ -326,6 +342,32 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 | `--add-data "源:目標"` | 新增資源檔 |
 | `--hidden-import 模組名` | 手動補充隱藏依賴 |
 
+### 5. 自動化發佈（GitHub Actions）
+
+[`.github/workflows/build-app.yml`](.github/workflows/build-app.yml) 會在 6 個平台上自動建置——
+Windows x64 / ARM、macOS Intel / ARM、Linux x64 / ARM——並把每個建置產物掛到 GitHub Release 上。
+**發版不需要在本機打包。**
+
+推送一個版本 tag 即可觸發（tag 需形如 `v1.2.3`）：
+
+```bash
+git add .
+git commit -m "Release v1.0.0"
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+工作流接著會：
+
+1. 在 6 個 runner 上執行 `pyinstaller main.spec`；
+2. 把每個建置打包成 `ModelConvert-<tag>-<平台>.zip`；
+3. 為該 tag 建立 GitHub Release 並上傳這 6 個 zip。
+
+Release 預設為**草稿（draft）**狀態——請到 Releases 頁面確認檔案無誤後再手動發佈。
+
+也可以手動觸發：**Actions → Build ModelConvert → Run workflow**，在 `release_tag` 填入既有的 tag，
+即可把建置產物（重新）上傳到該 Release。
+
 ---
 
 ## 六、注意事項
@@ -353,6 +395,8 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 - **PSK / PSKX 不受此影響**：Unreal 的 PSK 格式有明確的軸約定（`-Y` 是正面），
   所以換軸是固定的一次反射，不需要判定。若手上的 PSK 轉出來是背對的，
   說明來源檔案的軸約定與常規不同，請在 PMXEditor 裡繞 Y 轉 180° 處理。
+- **XPS / XNALara 也不受此影響**：XPS 是「`+X` 左、`+Y` 上、`+Z` 正前」，
+  換軸同樣是固定的一次反射（`(x, y, z) → (x, y, -z)`），不需要判定。
 
 ### 該透明的地方不透明 / 不該透明的地方發透
 
@@ -374,11 +418,13 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 ### 已知限制
 
 - **FBX 結構**：二進位 FBX 7.x 與 ASCII FBX **都能讀**（舊文件裡「不支援 ASCII」的說法已過時）。
-- **貼圖格式**：DDS / KTX2 / WebP 會被跳過（材質退化為純色）。
+- **貼圖格式**：`.dds` 已能原生解碼（DXT1 / DXT3 / DXT5）——內建預覽能顯示，XPS / PSK 路徑也原樣拷貝，因為 MMD 本體就認 `.dds`。KTX2 / WebP 仍不支援，會退化為純色。
 - **物理**：PMX 剛體/關節 ↔ VRM SpringBone **不會互相轉換**。
 - **材質效果**：球諧貼圖（.sph/.spa）、toon 貼圖在 VRM 側不保留；反向（→ PMX）時本工具一律不上 toon。
 - **骨骼名**：FBX 轉換保留英文骨骼名（`Hips`、`Spine` …），直接套 MMD 現成動作（.vmd）匹配不上，需在 PMXEditor 裡批次改為日文標準名。
   PSK 走的是另一條路：Bip001 那套 3dsMax Biped 命名**預設就轉成 MMD 標準日文名**，英文原名寫進骨骼的英文名備註。
+  XPS 同理：`spine lower` / `arm left elbow` / `leg right knee` / `arm left finger 2b` … 按規則改名
+  （`上半身` / `左ひじ` / `右ひざ` / `左人指２` …），認不出來的保留原名。
 - **表情**：源模型沒有 BlendShape / morph 時，PMX 表情也為 0，需手工建。
 - **PSK / PSKX 雙向的已知限制**：
   - PMX→psk 時日文骨骼名優先取 `name_en`，沒有則查兜底表（`全ての親` → `Root` 等），
@@ -391,6 +437,11 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
   （`(x, y, z) → (x, z, y)`）。這一步是寫死的，沒有 FBX 那樣的「自動判定朝向」開關。
 - **`.psk` 的副檔名衝突**：PmxEditor 用 `.psk` 存它的「錨點資料」，和 Unreal 的網格同名。
   詳見上面「PmxEditor 報 アンカーデータの読み込みに失敗しました」一節。
+- **XPS / XNALara**：只讀**二進制** `.xps`（XPS 的 Generic Item 2 與舊版 XNALara 二進制都支援）。
+  更老的**ASCII** 文本變體（`.xps` / `.mesh.ascii` 純文本）不支援，會明確報錯而不是產出一個壞模型。
+  最後一個網格之後的 129 位元組尾部資料直接忽略（裡面沒有模型資訊）。
+- **XPS 沒有表情**：該格式不存 BlendShape，所以匯出的 PMX 表情數為 0，眨眼 / 口型要在
+  PMXEditor 裡手工補。XPS 其實**有**逐頂點顏色，目前沒寫進 PMX。
 
 ### MMD 提示無法載入（編碼問題）
 

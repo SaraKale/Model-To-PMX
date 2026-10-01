@@ -1,6 +1,6 @@
 # モデル変換ツール（純 Python）
 
-`.fbx`・`.unitypackage`・`.vrm`・`.pmx`・`.uemodel`（UEFormat）を相互に変換し、さらに `.psk` / `.pskx`（Unreal ActorX）を PMX へ変換できます。**すべて Python 標準ライブラリだけで実装**しています。
+`.fbx`・`.unitypackage`・`.vrm`・`.pmx`・`.uemodel`（UEFormat）を相互に変換し、さらに `.psk` / `.pskx`（Unreal ActorX）と `.xps`（XNALara / XPS）を PMX へ変換できます。**すべて Python 標準ライブラリだけで実装**しています。
 Blender / Autodesk FBX SDK / Unity 3D は不要、mmd_tools / UniVRM といったプラグインも不要です。
 バイナリ形式を直接読み書きし、ウィンドウへドラッグするだけで変換できます。
 
@@ -25,6 +25,7 @@ Blender / Autodesk FBX SDK / Unity 3D は不要、mmd_tools / UniVRM といっ�
 | uemodel（UEFormat） → PMX | 公開仕様 UEFormat の `.uemodel`（v1–v10）を読み込み。同じ実行で ASCII FBX も書き出し可能 |
 | PMX → uemodel（UEFormat） | UEFormat `.uemodel`（既定 v9、v10 も指定可）を書き出し。UE / FModel エコシステムへ |
 | PSK / PSKX（Unreal ActorX） → PMX | Unreal の `.psk`（`FACE0000`）/ `.pskx`（`FACE3200`）を読み込み。頂点ウェイト・MRPH 頂点モーフ・追加 UV に対応 |
+| XPS / XNALara → PMX | XPS の Generic Item 2 バイナリ `.xps`（旧 XNALara バイナリも可）を読み込み；軸を変換し、ボーンを日本語標準名へ、テクスチャもそのまま持ち込み |
 | PMX → FBX | ASCII FBX 7.4 を書き出し（ボーン・ウェイト・BlendShape・相対テクスチャパス） |
 | PMX → psk / pskx | Unreal ActorX 形式を書き出し；`.pskx` は法線/頂点色/追加 UV/表情付き、`.psk` は標準チャンクのみ |
 | PMX → 検証 + プレビューのみ | 構造の読み取り専用検証、ファイルは出力しない |
@@ -45,14 +46,19 @@ Blender / Autodesk FBX SDK / Unity 3D は不要、mmd_tools / UniVRM といっ�
   つまり MMD でいう「不使用 toon」になります。
 - **多言語 UI**：右上で 简体中文 / 繁體中文 / English / 日本語 を切り替えられ、選択は設定に記憶されます。
 - **高解像度ディスプレイ対応**：システム DPI に自動追従。右上の「界面缩放（UI 拡縮）」で倍率を手動指定も可。
-- **タブ式オプション**：オプション欄は「通用 / FBX / VRM / UE / 出力」の 5 タブに分かれ、拡張しやすいです。
+- **タブ式オプション**：オプション欄は「通用 / FBX / VRM / UE / PSK / XPS / 出力」の 7 タブに分かれ、拡張しやすいです。
 - **巻き順の自動判定**：三角形の巻き順を「幾何面法線 vs 頂点法線」の投票で自動判定し、
   大面積の抜け / 輪郭線が黒い塊になるのを防ぎます。
-- **テクスチャ処理**：PNG/JPEG はそのまま透過、BMP/TGA はその場で PNG に変換、GLB へ埋め込むか PMX と同じフォルダへ書き出し。
+- **テクスチャ処理**：PNG/JPEG はそのまま透過、BMP/TGA はその場で PNG に変換、`.dds` はそのままコピー（MMD 本体が対応）、GLB へ埋め込むか PMX と同じフォルダへ書き出し。
 - **PSK / PSKX を直接読み込み**：Unreal ActorX の `.psk`（`FACE0000`）と `.pskx`（`FACE3200`）の両方に対応し、
   頂点ウェイト・MRPH 頂点モーフ・`EXTRAUVS*` 追加 UV も引き継ぎます。Bip001（3ds Max Biped）の
   ボーン名は MMD 標準の日本語ボーン名（`センター` / `上半身` / `左足ＩＫ` …）へ自動対応付けし、
   **元の英語名はボーンの英語名フィールドに残す**ので、どちらも失われません。
+- **XPS / XNALara 対応**：XPS の Generic Item 2 バイナリ（マジック `323232`、`XNAaraL` ヘッダ）と旧 XNALara バイナリを読み込み、
+  バージョン 3 以降の「頂点ごとにウェイト本数が可変」にも対応します。軸は MMD の座標系へ変換し（XPS は `+X` 左 / `+Y` 上 / `+Z` 前なので、Z の符号を反転するだけ）、
+  `spine lower` / `arm left elbow` / `leg right knee` といったボーン名は規則で MMD 標準の日本語名に変換、`unused …` のプレースホルダー骨は**削除せず**
+  独立した `unused` 表示枠へ移します（ウェイトはそのまま）。各メッシュのディフューズテクスチャは `textures/` へコピーし、**alpha も保持**します ——
+  XPS の alpha は髪やまつ毛の透明度そのものです。`.dds` はそのままコピー（MMD 本体が `.dds` に対応）、内蔵プレビューは DXT1 / DXT3 / DXT5 をデコードできます。
 
 ---
 
@@ -76,9 +82,10 @@ Model-to-PMX/
 │   ├── fbx_reader.py            #   バイナリ FBX 7.x 解析ライブラリ
 │   ├── fbx_probe.py             #   FBX 構造の調査（メッシュ/ボーン/スキン一覧）
 │   ├── pmxio.py                 #   完全な PMX 2.0 読み書き（表情/IK/付与/剛体/ジョイント含む）
-│   ├── vrmio.py                 #   GLB/glTF コンテナ読み書き + PNG エンコード + BMP/TGA デコード
+│   ├── vrmio.py                 #   GLB/glTF コンテナ読み書き + PNG エンコード + BMP/TGA/DDS(DXT1/3/5) デコード
 │   ├── uemodelio.py             #   UEFormat .uemodel の読み書き（v1–v10）
 │   ├── pskio.py                 #   Unreal ActorX .psk / .pskx の読み込み
+│   ├── xpsio.py                 #   XPS / XNALara .xps の読み込み（Generic Item 2 + 旧バイナリ）
 │   ├── fbxout.py                #   ASCII FBX 7.4 ライタ（「FBX も同時出力」用）
 │   └── unitypackage_unpack.py   #   .unitypackage の解凍（gzip tar）
 │
@@ -90,6 +97,7 @@ Model-to-PMX/
 │   ├── pmx2uemodel.py           #   PMX → uemodel（UEFormat）
 │   ├── pmx2psk.py               #   PMX → psk / pskx（Unreal ActorX）
 │   ├── psk2pmx.py               #   PSK / PSKX（Unreal ActorX）→ PMX
+│   ├── xps2pmx.py               #   XPS / XNALara → PMX
 │   └── pmx_check.py             #   PMX 検証 + ソフトウェア描画のプレビュー画像
 │
 ├── gfx/
@@ -107,7 +115,7 @@ Model-to-PMX/
 ### 方法 1：グラフィカル UI（推奨）
 
 1. 実行：`python main.py`
-2. `.fbx` / `.unitypackage` / `.vrm` / `.pmx` / `.uemodel` / `.psk` / `.pskx` ファイルを**ウィンドウ内の任意の場所へドラッグ**、またはドロップ領域をクリックしてファイルを選択。
+2. `.fbx` / `.unitypackage` / `.vrm` / `.pmx` / `.uemodel` / `.psk` / `.pskx` / `.xps` ファイルを**ウィンドウ内の任意の場所へドラッグ**、またはドロップ領域をクリックしてファイルを選択。
    **ドロップでは読み込みとプレビューのみ行い、自動変換はしません**。タスク方向とオプションを確認し、「変換開始」を押すと実行されます。
 3. ドロップ領域の下に**選択ファイル一覧**（ファイル名 / 形式 / サイズ）が表示され、今回変換する内容が一目で分かります：
    - 追加ドロップは**追記**（絶対パスで重複を自動除外）；
@@ -127,7 +135,8 @@ UI のポイント：
 - **プレビュー右下の描画バックエンド表示**：`Pillow` か純 Python か、および前フレームの所要時間（ms）
 - **右上「言語」**：简体中文 / 繁體中文 / English / 日本語（プレビューのツールバーも追従）
 - **右上「界面缩放（UI 拡縮）」**：システム DPI に自動追従、または倍率を手動指定
-- **オプションタブ**：「通用 / FBX / VRM / UE / 出力」の 5 タブ
+- **オプションタブ**：「通用 / FBX / VRM / UE / PSK / XPS / 出力」の 7 タブ
+- **XPS タブ**：ボーンを MMD 標準の日本語名へ変換、脚の骨チェーンに合わせて IK 骨を補完、材質を既定で両面描画、`unused` プレースホルダー骨を独立した表示枠へ、「FBX も同時出力」
 - **UE タブ**：タスクで「uemodel → PMX」を選んだとき、「同時に FBX を出力」にチェックすると PMX の隣に ASCII FBX も書き出します。このタブでは目標身長（cm）とアルファの扱いも設定できます
 - **FBX タブ**：3 つの設定項目があります。変更するとプレビューと「変換開始」の結果の両方にすぐ反映されます
   - **テクスチャのアルファ**：`保持`（そのまま）/ `自動判定（推奨）`/ `すべて除去`。
@@ -205,6 +214,14 @@ python convert/pmx2uemodel.py "model.pmx" -o "model.uemodel" --version 10
 # テクスチャは材質名からソースフォルダ内を自動検索
 python convert/psk2pmx.py "model.psk" -o "model.pmx"
 python convert/psk2pmx.py "model.pskx" -o "model.pmx" --raw-bone-names --no-ik
+
+# XPS / XNALara → PMX
+# 既定で軸を変換し、ボーン名を MMD 標準の日本語名へ（元の英語名は英語名フィールドへ）
+# 各メッシュのディフューズテクスチャは textures/ へコピー
+python convert/xps2pmx.py "model.xps" -o "model.pmx"
+python convert/xps2pmx.py "model.xps" -o "model.pmx" --raw-bone-names --no-ik
+python convert/xps2pmx.py "model.xps" -o "model.pmx" --show-unused --one-sided
+python convert/xps2pmx.py "model.xps" -o "model.pmx" --fbx
 
 # PMX → FBX（ASCII 7.4、ボーン/ウェイト/BlendShape/相対テクスチャパス）
 python convert/fbxout.py "model.pmx" -o "model.fbx"
@@ -340,6 +357,32 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 | `--add-data "元:先"` | リソースファイルを追加 |
 | `--hidden-import モジュール名` | 隠し依存を手動で補完 |
 
+### 5. 自動リリース（GitHub Actions）
+
+[`.github/workflows/build-app.yml`](.github/workflows/build-app.yml) が 6 つのターゲットで自動ビルドします
+——Windows x64 / ARM、macOS Intel / ARM、Linux x64 / ARM——そして各ビルド成果物を GitHub Release に添付します。
+**リリースにローカルでのビルドは不要です。**
+
+バージョンタグ（`v1.2.3` の形式）を push すると実行されます：
+
+```bash
+git add .
+git commit -m "Release v1.0.0"
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+ワークフローの流れ：
+
+1. 6 つの runner で `pyinstaller main.spec` を実行；
+2. 各ビルドを `ModelConvert-<tag>-<プラットフォーム>.zip` にまとめる；
+3. そのタグの GitHub Release を作成し、6 つの zip をアップロード。
+
+Release は**ドラフト**として作成されます——Releases ページで内容を確認してから公開してください。
+
+手動実行も可能です：**Actions → Build ModelConvert → Run workflow** で `release_tag` に既存のタグを入力すると、
+その Release に成果物を（再）アップロードできます。
+
 ---
 
 ## 六、注意事項
@@ -367,6 +410,8 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 - **PSK / PSKX はこの影響を受けません**：Unreal の PSK 形式は軸の取り決めが明確（`-Y` が正面）なので、
   軸の入れ替えは固定の 1 回の反転で済み、判定は不要です。もし手元の PSK が背を向けて出力される場合は、
   ソースの軸の取り決めが標準と異なるので、PMXEditor で Y 軸回りに 180° 回転してください。
+- **XPS / XNALara もこの影響を受けません**：XPS は「`+X` 左・`+Y` 上・`+Z` 前」なので、
+  軸の入れ替えも固定の 1 回の反転（`(x, y, z) → (x, y, -z)`）で済み、判定は不要です。
 
 ### 透明であるべきでない所が透ける / 透明であるべき所が不透明
 
@@ -391,11 +436,13 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 ### 既知の制限
 
 - **FBX 構造**：バイナリ FBX 7.x と ASCII FBX の **両方に対応**（以前の「ASCII 非対応」は誤りでした）。
-- **テクスチャ形式**：DDS / KTX2 / WebP はスキップされる（材質は単色に退化）。
+- **テクスチャ形式**：`.dds` はネイティブにデコード可能（DXT1 / DXT3 / DXT5）——内蔵プレビューで表示でき、XPS / PSK 経路でもそのままコピーします（MMD 本体が `.dds` に対応）。KTX2 / WebP は未対応で、単色に退化します。
 - **物理**：PMX 剛体/ジョイント ↔ VRM SpringBone は**相互変換されない**。
 - **材質効果**：球環境マップ（.sph/.spa）・toon マップは VRM 側に保持されない。逆方向（→ PMX）では本ツールは一切 toon を適用しません。
 - **ボーン名**：FBX 変換は英語ボーン名（`Hips`、`Spine` …）を維持するため、MMD の既存モーション（.vmd）と一致せず、PMXEditor で日本語標準名へ一括変更が必要。
   PSK は別ルートです。Bip001（3ds Max Biped）の命名は**既定で MMD 標準の日本語名に変換**され、元の英語名はボーンの英語名フィールドに残ります。
+  XPS も同様です。`spine lower` / `arm left elbow` / `leg right knee` / `arm left finger 2b` … を規則で改名し
+  （`上半身` / `左ひじ` / `右ひざ` / `左人指２` …）、判別できないものは元の名前を保持します。
 - **表情**：ソースモデルに BlendShape / morph がない場合、PMX の表情も 0 となり、手作業での作成が必要。
 - **PSK / PSKX 双方向の既知の制約**：
   - PMX→psk では日本語ボーン名は `name_en` を優先的に使用し、ない場合はフォールバック表
@@ -409,6 +456,11 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
   本ツールは `(x, y, z) → (x, z, y)` を使っています。これは固定で、FBX のような「向きの自動判定」スイッチはありません。
 - **`.psk` の拡張子衝突**：PmxEditor は「アンカーデータ」を `.psk` で保存するため、Unreal のメッシュと同じ拡張子になります。
   詳しくは後述の「PmxEditor が『アンカーデータの読み込みに失敗しました』と表示する」を参照してください。
+- **XPS / XNALara**：読み込めるのは**バイナリ**の `.xps` のみ（XPS の Generic Item 2 と旧 XNALara バイナリの両方に対応）。
+  さらに古い **ASCII** テキスト版（`.xps` / `.mesh.ascii`）は非対応で、壊れたモデルを出力せず明確にエラーになります。
+  最後のメッシュ以降の 129 バイトの末尾データは無視します（モデル情報を含まないため）。
+- **XPS には表情がありません**：この形式は BlendShape を持たないため、出力 PMX の表情数は 0 になり、瞬き / 口の形は
+  PMXEditor で手作業で追加してください。XPS には実は**頂点カラー**がありますが、現状 PMX には書き出していません。
 
 ### MMD がモデルを読み込めない（エンコード）
 

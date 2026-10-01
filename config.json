@@ -18,8 +18,10 @@
   "alpha_mode": "auto",
   "auto_facing": true,
   "face_180": true,
-  "ue_fbx": true,
+  "ue_fbx": false,
   "ue_alpha": true,
+  "ue_align": false,
+  "ue_align_ref": "",
   "ue_height": "180",
   "psk_jp": true,
   "psk_ik": true,
@@ -29,7 +31,12 @@
   "psk_out": "pskx",
   "psk_height": "160",
   "psk_tex": true,
+  "xps_jp": true,
+  "xps_ik": true,
+  "xps_double": true,
+  "xps_unused": true,
+  "xps_fbx": false,
   "subfolder": true,
-  "split": 0.5434782608695652,
-  "vsplit": 0.7781456953642384
+  "split": 0.5441329179646937,
+  "vsplit": 0.8555643251775849
 }

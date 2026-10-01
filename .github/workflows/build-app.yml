@@ -2,6 +2,13 @@ name: Build ModelConvert
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release New version"
+        required: false
+        type: string
+        default: ""
+
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+*"
@@ -64,30 +71,42 @@ jobs:
       - name: Archive artifacts (Windows)
         if: runner.os == 'Windows'
         run: |
-          Compress-Archive -Path dist/ModelConvert -DestinationPath ModelConvert-${{ github.ref_name }}-${{ matrix.arch_name }}.zip
+          Compress-Archive `
+            -Path dist/ModelConvert `
+            -DestinationPath "ModelConvert-${{ inputs.release_tag || github.ref_name }}-${{ matrix.arch_name }}.zip"
 
       - name: Archive artifacts (Linux)
         if: runner.os == 'Linux'
         run: |
-          cd dist && zip -r ../ModelConvert-${{ github.ref_name }}-${{ matrix.arch_name }}.zip ModelConvert
+          cd dist
+          zip -r "../ModelConvert-${{ inputs.release_tag || github.ref_name }}-${{ matrix.arch_name }}.zip" ModelConvert
 
       - name: Archive artifacts (macOS)
         if: runner.os == 'macOS'
         run: |
-          cd dist && zip -r -y ../ModelConvert-${{ github.ref_name }}-${{ matrix.arch_name }}.zip ModelConvert.app
+          cd dist
+          zip -r -y "../ModelConvert-${{ inputs.release_tag || github.ref_name }}-${{ matrix.arch_name }}.zip" ModelConvert.app
 
       - name: Upload zip artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ModelConvert-${{ github.ref_name }}-${{ matrix.arch_name }}
-          path: ModelConvert-${{ github.ref_name }}-${{ matrix.arch_name }}.zip
+          name: ModelConvert-${{ inputs.release_tag || github.ref_name }}-${{ matrix.arch_name }}
+          path: ModelConvert-${{ inputs.release_tag || github.ref_name }}-${{ matrix.arch_name }}.zip
           if-no-files-found: error
 
   release:
-    name: Create Release
+    name: Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+
+    if: >
+      github.ref_type == 'tag' ||
+      (
+        github.event_name == 'workflow_dispatch' &&
+        inputs.release_tag != ''
+      )
+
     runs-on: ubuntu-latest
+
     permissions:
       contents: write
 
@@ -98,13 +117,37 @@ jobs:
           path: release-artifacts
           merge-multiple: true
 
-      - name: Create a Release
-        id: create_release
+      # ========================================
+      # 正常 Tag 发布
+      # ========================================
+      - name: Create or update Release
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v3
         with:
           name: Release ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
           files: release-artifacts/*.zip
+
+          # 第一次创建时保持 Draft
+          # 发布前可以到 GitHub Release 页面检查
           draft: true
+
           generate_release_notes: true
+
           prerelease: false
+
+          # 明确指定：同名文件覆盖
+          overwrite_files: true
+
+      # ========================================
+      # 手动更新已有 Release
+      # ========================================
+      - name: Update existing Release
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload \
+            "${{ inputs.release_tag }}" \
+            release-artifacts/*.zip \
+            --clobber

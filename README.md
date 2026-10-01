@@ -1,6 +1,6 @@
 # Model Converter (Pure Python)
 
-Convert `.fbx`, `.unitypackage`, `.vrm`, `.pmx`, and `.uemodel` (UEFormat) into each other — and `.psk` / `.pskx` (Unreal ActorX) into PMX — **entirely with the Python standard library**.
+Convert `.fbx`, `.unitypackage`, `.vrm`, `.pmx`, and `.uemodel` (UEFormat) into each other — and `.psk` / `.pskx` (Unreal ActorX) and `.xps` (XNALara / XPS) into PMX — **entirely with the Python standard library**.
 No Blender / Autodesk FBX SDK / Unity 3D required, and no plugins such as mmd_tools / UniVRM.
 It reads and writes the binary formats directly — just drag a file into the window to convert.
 
@@ -25,6 +25,7 @@ Download the latest version from [releases](https://github.com/SaraKale/Model-to
 | uemodel (UEFormat) → PMX | Reads the public UEFormat `.uemodel` (v1–v10); can also write an ASCII FBX in the same run |
 | PMX → uemodel (UEFormat) | Writes UEFormat `.uemodel` (v9 by default, v10 optional) for the UE / FModel toolchain |
 | PSK / PSKX (Unreal ActorX) → PMX | Reads Unreal `.psk` (`FACE0000`) / `.pskx` (`FACE3200`) with skin weights, MRPH vertex morphs and extra UVs |
+| XPS / XNALara → PMX | Reads the XPS "Generic Item 2" binary `.xps` (and the legacy XNALara binary); re-maps axes, renames bones and copies textures over |
 | PMX → FBX | Writes ASCII FBX 7.4 (bones, weights, BlendShape morphs, relative texture paths) |
 | PMX → psk / pskx | Writes Unreal ActorX format; `.pskx` carries normals / vertex colors / extra UVs / morphs; `.psk` is the standard subset |
 | PMX → validation + preview only | Read-only structural validation; no file output |
@@ -44,7 +45,7 @@ Download the latest version from [releases](https://github.com/SaraKale/Model-to
   i.e. "no toon" in MMD terms.
 - **Multilingual UI**: Switch between Simplified Chinese / Traditional Chinese / English / Japanese in the top-right; the choice is saved to config.
 - **HiDPI friendly**: Auto-scales to system DPI; the top-right "UI zoom" lets you set a manual factor.
-- **Tabbed options**: The options area is split into five tabs — General / FBX / VRM / UE / Output — for easy extension.
+- **Tabbed options**: The options area is split into seven tabs — General / FBX / VRM / UE / PSK / XPS / Output — for easy extension.
 - **Automatic winding-order detection**: Triangle winding is auto-decided by voting between geometric-face normals and vertex normals,
   avoiding large holes / outline lines smearing into black blobs.
 - **Texture handling**: PNG/JPEG pass through directly; BMP/TGA are converted to PNG on the fly; embedded in GLB or exported to the PMX directory.
@@ -52,6 +53,13 @@ Download the latest version from [releases](https://github.com/SaraKale/Model-to
   MRPH vertex morphs and `EXTRAUVS*` extra UV sets. The Bip001 (3ds Max Biped) bone naming is mapped to
   MMD standard Japanese bone names (`センター` / `上半身` / `左足ＩＫ` …) with the **original English name kept in the
   bone's English-name field**, so nothing is lost.
+- **XPS / XNALara support**: Reads the XPS "Generic Item 2" binary (magic `323232`, the `XNAaraL` header) as well as the
+  legacy XNALara binary, including the variable bone-count-per-vertex introduced in version 3. Axes are re-mapped to MMD's
+  (XPS is `+X` left / `+Y` up / `+Z` front, so only Z is negated), bone names like `spine lower` / `arm left elbow` /
+  `leg right knee` are turned into MMD standard Japanese names by rule, the `unused …` placeholder bones are moved into a
+  separate `unused` display frame instead of being deleted (weights stay intact), and each mesh's diffuse texture is copied
+  into `textures/` **with its alpha kept** — in XPS the alpha really is hair / eyelash transparency.
+  `.dds` textures are copied as-is: MMD itself supports `.dds`, and the built-in preview decodes DXT1 / DXT3 / DXT5.
 
 ---
 
@@ -75,9 +83,10 @@ Model-to-PMX/
 │   ├── fbx_reader.py            #   Binary FBX 7.x parser library
 │   ├── fbx_probe.py             #   Probe FBX structure (mesh/bones/skinning list)
 │   ├── pmxio.py                 #   Full PMX 2.0 read/write (incl. morph/IK/additional/rigidbody/joint)
-│   ├── vrmio.py                 #   GLB/glTF container read/write + PNG encode + BMP/TGA decode
+│   ├── vrmio.py                 #   GLB/glTF container read/write + PNG encode + BMP/TGA/DDS(DXT1/3/5) decode
 │   ├── uemodelio.py             #   UEFormat .uemodel read/write (v1–v10)
 │   ├── pskio.py                 #   Unreal ActorX .psk / .pskx reader
+│   ├── xpsio.py                 #   XPS / XNALara .xps reader (Generic Item 2 + legacy binary)
 │   ├── fbxout.py                #   ASCII FBX 7.4 writer (the "also export FBX" option)
 │   └── unitypackage_unpack.py   #   Unpack .unitypackage (gzip tar)
 │
@@ -89,6 +98,7 @@ Model-to-PMX/
 │   ├── pmx2uemodel.py           #   PMX → uemodel (UEFormat)
 │   ├── pmx2psk.py               #   PMX → psk / pskx (Unreal ActorX)
 │   ├── psk2pmx.py               #   PSK / PSKX (Unreal ActorX) → PMX
+│   ├── xps2pmx.py               #   XPS / XNALara → PMX
 │   └── pmx_check.py             #   PMX validation + software-rendered preview image
 │
 ├── gfx/
@@ -106,7 +116,7 @@ Model-to-PMX/
 ### Method 1: Graphical interface (recommended)
 
 1. Run `python main.py`
-2. **Drag** a `.fbx` / `.unitypackage` / `.vrm` / `.pmx` / `.uemodel` file **anywhere into the window**, or click the drop area to choose a file.
+2. **Drag** a `.fbx` / `.unitypackage` / `.vrm` / `.pmx` / `.uemodel` / `.psk` / `.pskx` / `.xps` file **anywhere into the window**, or click the drop area to choose a file.
    **Dropping only loads the file and shows the preview — nothing is converted automatically.**
    Check the task direction and options, then click "Start conversion" to run.
 3. A **selected-file list** (file name / format / size) appears under the drop area, so you can see at a glance what will be converted:
@@ -127,7 +137,8 @@ UI highlights:
 - **Render backend badge (bottom-right of the preview)**: shows whether `Pillow` or pure Python is in use, plus the last frame time in ms
 - **"Language" (top-right)**: Simplified Chinese / Traditional Chinese / English / Japanese (the preview toolbar follows too)
 - **"UI zoom" (top-right)**: Auto-follows system DPI, or set a manual factor
-- **Option tabs**: General / FBX / VRM / UE / Output, five tabs
+- **Option tabs**: General / FBX / VRM / UE / PSK / XPS / Output, seven tabs
+- **XPS tab**: bone renaming to MMD Japanese names, adding the leg IK bones, making materials two-sided by default, parking the `unused` placeholder bones into their own display frame, and "also export an FBX"
 - **UE tab**: when the `.uemodel` → PMX task is selected, tick "also export an FBX file" to get an ASCII FBX next to the PMX; the same tab sets target height (cm) and alpha handling
 - **FBX tab**: three settings; changing them updates both the preview and the "Start conversion" result immediately
   - **Texture alpha channel**: `Keep` (as-is) / `Auto (recommended)` / `Strip all`.
@@ -197,6 +208,14 @@ python convert/pmx2uemodel.py "model.pmx" -o "model.uemodel" --version 10
 # textures are looked up by material name in the source folder
 python convert/psk2pmx.py "model.psk" -o "model.pmx"
 python convert/psk2pmx.py "model.pskx" -o "model.pmx" --raw-bone-names --no-ik
+
+# XPS / XNALara → PMX
+# Axes are re-mapped and bone names become MMD standard Japanese names by default
+# (originals go to the English-name field); the per-mesh diffuse texture is copied into textures/
+python convert/xps2pmx.py "model.xps" -o "model.pmx"
+python convert/xps2pmx.py "model.xps" -o "model.pmx" --raw-bone-names --no-ik
+python convert/xps2pmx.py "model.xps" -o "model.pmx" --show-unused --one-sided
+python convert/xps2pmx.py "model.xps" -o "model.pmx" --fbx
 
 # PMX → FBX (ASCII 7.4, with bones/weights/BlendShapes/relative texture paths)
 python convert/fbxout.py "model.pmx" -o "model.fbx"
@@ -333,6 +352,32 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 | `--add-data "src:dst"` | Add resource files |
 | `--hidden-import module` | Manually add a hidden dependency |
 
+### 5. Automated release (GitHub Actions)
+
+[`.github/workflows/build-app.yml`](.github/workflows/build-app.yml) builds the app on six targets —
+Windows x64 / ARM, macOS Intel / ARM, Linux x64 / ARM — and attaches every build to a GitHub
+Release. You do **not** need to build locally to publish a version.
+
+The workflow fires when you push a version tag (the tag must look like `v1.2.3`):
+
+```bash
+git add .
+git commit -m "Release v1.0.0"
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+It then:
+
+1. runs `pyinstaller main.spec` on all six runners;
+2. zips each build as `ModelConvert-<tag>-<platform>.zip`;
+3. creates the GitHub Release for that tag and uploads the six zips.
+
+The Release is created as a **draft** — open the Releases page, check the files, then publish it.
+
+You can also run it by hand: **Actions → Build ModelConvert → Run workflow**, and put an existing
+tag in the `release_tag` field to (re)upload the artifacts to that Release.
+
 ---
 
 ## 6. Notes
@@ -356,6 +401,9 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 - **PSK / PSKX is not affected by any of this**: the Unreal PSK format has a well-defined axis convention
   (`-Y` is the front), so the axis swap is a fixed single reflection and needs no detection. If a PSK you have
   comes out facing away, its source convention differs from the norm — rotate it 180° around Y in PMXEditor.
+- **XPS / XNALara is not affected either**: XPS is "`+X` left, `+Y` up, `+Z` front", so the axis swap is again a
+  fixed single reflection (`(x, y, z) → (x, y, -z)`). If an `.xps` comes out facing away, it was authored in a
+  different convention — rotate it 180° around Y in PMXEditor.
 
 ### Transparent where it shouldn't be / opaque where it should be
 
@@ -373,11 +421,14 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
 ### Known limitations
 
 - **FBX structure**: both binary FBX 7.x and ASCII FBX are read (the older "ASCII is not supported" note was wrong).
-- **Texture formats**: DDS / KTX2 / WebP are skipped (material degrades to a solid color).
+- **Texture formats**: `.dds` is decoded natively (DXT1 / DXT3 / DXT5) — the built-in preview shows it, and it is copied
+  as-is on the XPS / PSK paths because MMD itself reads `.dds`. KTX2 / WebP are still not decoded, so they degrade to a solid colour.
 - **Physics**: PMX rigidbody/joint ↔ VRM SpringBone are **not** converted between each other.
 - **Material effects**: Spherical maps (.sph/.spa) and toon maps are not preserved on the VRM side; in the other direction (→ PMX) this tool never applies toon.
 - **Bone names**: FBX conversion keeps English bone names (`Hips`, `Spine` …), so they won't match MMD's ready-made motions (.vmd); you must batch-rename them to the Japanese standard names in PMXEditor.
   PSK takes a different route: the Bip001 (3ds Max Biped) naming is **converted to MMD standard Japanese names by default**, with the original English name kept in the bone's English-name field.
+  XPS does the same: `spine lower` / `arm left elbow` / `leg right knee` / `arm left finger 2b` … are renamed by rule
+  (`上半身` / `左ひじ` / `右ひざ` / `左人指２` …), and anything unrecognised keeps its original name.
 - **Morphs**: When the source model has no BlendShape / morph, the PMX morphs are also 0 and must be created by hand.
 - **PSK axes are a fixed mapping**: Unreal's PSK is "`+X` left hand, `-Y` front, `+Z` up" while PMX is
   "`+X` left hand, `-Z` front, `+Y` up" — opposite handedness, so the axis swap must include **one reflection**
@@ -389,6 +440,11 @@ pyinstaller --paths formats --paths convert --paths gfx -w main.py
   - PMX allows at most 4 bones per vertex; if the original PSK has 5–6, they are lost on round-trip.
 - **The `.psk` extension collides**: PmxEditor stores its "anchor data" in `.psk` files, the same extension Unreal meshes use.
   See "PmxEditor reports アンカーデータの読み込みに失敗しました" below.
+- **XPS / XNALara**: only the **binary** `.xps` is read (both the XPS "Generic Item 2" variant and the legacy XNALara binary).
+  The old **ASCII** `.xps` / `.mesh.ascii` text variant is not supported — it errors out with a clear message instead of
+  producing a broken model. The 129 bytes of trailing data after the last mesh are ignored (they carry no model data).
+- **XPS has no morphs**: the format stores no blend shapes, so the exported PMX has 0 morphs and you add expressions
+  (blink / mouth shapes) by hand in PMXEditor. XPS *does* ship per-vertex colours; they are currently not written to PMX.
 
 ### MMD says it cannot load the model (text encoding)
 

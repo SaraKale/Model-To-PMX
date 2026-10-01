@@ -355,6 +355,208 @@ def _decode_tga(data):
     return _png_from_rgba(w, h, bytes(pix))
 
 
+# ------------------------------------------------------------------- DDS ----
+# XPS / XNALara 的贴图大量是 DDS（实测轩辕剑柒的样本是 2048×2048 的 DXT1 与
+# 512×512 的 DXT5）。MMD 本体虽然认 .dds（见 VPVP wiki 的「拡張子」表，所以
+# 转换时原样拷过去就行），但 GUI 预览的图片解码走的是纯标准库路线，没装
+# Pillow 时只认 PNG/TGA/BMP，DDS 会解不出来、预览变灰模。这里补一个
+# DXT1/DXT3/DXT5 与未压缩 RGB(A) 的解码，解成 PNG 后预览就能正常显示。
+
+# 一个索引字节 → 4 个 2 位索引（低位在前），DXT 全系都用这个位序
+_DXT_Q = tuple(((b & 3), ((b >> 2) & 3), ((b >> 4) & 3), ((b >> 6) & 3))
+               for b in range(256))
+
+
+def _rgb565(v):
+    r = (v >> 11) & 0x1F
+    g = (v >> 5) & 0x3F
+    b = v & 0x1F
+    return ((r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2))
+
+
+def _dxt_palette(c0, c1, allow_transparent):
+    """(c0, c1) → 4 个 RGBA 字节串。
+
+    allow_transparent（只有 DXT1 传 True）时，c0 <= c1 表示用「3 色 + 全透明」
+    档，第 4 个是透明黑 —— 这是 DXT1 唯一的 alpha 来源。
+    """
+    r0, g0, b0 = _rgb565(c0)
+    r1, g1, b1 = _rgb565(c1)
+    p0 = bytes((r0, g0, b0, 255))
+    p1 = bytes((r1, g1, b1, 255))
+    if allow_transparent and c0 <= c1:
+        return (p0, p1,
+                bytes(((r0 + r1) // 2, (g0 + g1) // 2, (b0 + b1) // 2, 255)),
+                b"\x00\x00\x00\x00")
+    return (p0, p1,
+            bytes(((2 * r0 + r1) // 3, (2 * g0 + g1) // 3, (2 * b0 + b1) // 3,
+                   255)),
+            bytes(((r0 + 2 * r1) // 3, (g0 + 2 * g1) // 3, (b0 + 2 * b1) // 3,
+                   255)))
+
+
+def _dxt5_alpha_ramp(a0, a1):
+    """DXT5 的 8 个 alpha 值：a0 > a1 是 6 插值档，否则 4 插值 + 0/255。"""
+    if a0 > a1:
+        return (a0, a1) + tuple(
+            ((7 - i) * a0 + i * a1) // 7 for i in range(1, 7))
+    return (a0, a1) + tuple(
+        ((5 - i) * a0 + i * a1) // 5 for i in range(1, 5)) + (0, 255)
+
+
+def _decode_dds(data):
+    """DDS → PNG 字节；不支持的子格式返回 None。"""
+    if data[:4] != b"DDS " or len(data) < 128:
+        return None
+    hdr = struct.unpack_from("<7I", data, 4)
+    height, width = hdr[2], hdr[3]
+    if not width or not height or width > 16384 or height > 16384:
+        return None
+    fourcc = data[84:88]
+    rgb_bits = struct.unpack_from("<I", data, 88)[0]
+    pix = bytearray(width * height * 4)
+    stride = width * 4
+
+    if fourcc in (b"DXT1", b"DXT3", b"DXT5"):
+        block = 8 if fourcc == b"DXT1" else 16
+        bw = (width + 3) // 4
+        bh = (height + 3) // 4
+        if len(data) < 128 + bw * bh * block:
+            return None
+        off = 128
+        Q = _DXT_Q
+        if fourcc == b"DXT1":
+            for by in range(bh):
+                y0 = by * 4
+                for bx in range(bw):
+                    c0 = data[off] | (data[off + 1] << 8)
+                    c1 = data[off + 2] | (data[off + 3] << 8)
+                    bits = struct.unpack_from("<I", data, off + 4)[0]
+                    pal = _dxt_palette(c0, c1, True)
+                    off += 8
+                    x0 = bx * 4
+                    for r in range(4):
+                        if y0 + r >= height:
+                            break
+                        q = Q[(bits >> (8 * r)) & 0xFF]
+                        row = (pal[q[0]] + pal[q[1]] + pal[q[2]] + pal[q[3]])
+                        o = (y0 + r) * stride + x0 * 4
+                        if x0 + 4 <= width:
+                            pix[o:o + 16] = row
+                        else:
+                            pix[o:o + (width - x0) * 4] = \
+                                row[:(width - x0) * 4]
+        elif fourcc == b"DXT3":
+            for by in range(bh):
+                y0 = by * 4
+                for bx in range(bw):
+                    al = data[off:off + 8]
+                    c0 = data[off + 8] | (data[off + 9] << 8)
+                    c1 = data[off + 10] | (data[off + 11] << 8)
+                    bits = struct.unpack_from("<I", data, off + 12)[0]
+                    pal = _dxt_palette(c0, c1, False)
+                    off += 16
+                    x0 = bx * 4
+                    for r in range(4):
+                        if y0 + r >= height:
+                            break
+                        o = (y0 + r) * stride + x0 * 4
+                        for k in range(4):
+                            if x0 + k >= width:
+                                break
+                            i = r * 4 + k
+                            n = (al[i >> 1] >> (4 * (i & 1))) & 0xF
+                            c = pal[(bits >> (2 * i)) & 3]
+                            pix[o + k * 4] = c[0]
+                            pix[o + k * 4 + 1] = c[1]
+                            pix[o + k * 4 + 2] = c[2]
+                            pix[o + k * 4 + 3] = n * 17
+        else:                                       # DXT5
+            for by in range(bh):
+                y0 = by * 4
+                for bx in range(bw):
+                    ramp = _dxt5_alpha_ramp(data[off], data[off + 1])
+                    abits = int.from_bytes(data[off + 2:off + 8], "little")
+                    c0 = data[off + 8] | (data[off + 9] << 8)
+                    c1 = data[off + 10] | (data[off + 11] << 8)
+                    bits = struct.unpack_from("<I", data, off + 12)[0]
+                    pal = _dxt_palette(c0, c1, False)
+                    off += 16
+                    x0 = bx * 4
+                    for r in range(4):
+                        if y0 + r >= height:
+                            break
+                        o = (y0 + r) * stride + x0 * 4
+                        for k in range(4):
+                            if x0 + k >= width:
+                                break
+                            i = r * 4 + k
+                            c = pal[(bits >> (2 * i)) & 3]
+                            pix[o + k * 4] = c[0]
+                            pix[o + k * 4 + 1] = c[1]
+                            pix[o + k * 4 + 2] = c[2]
+                            pix[o + k * 4 + 3] = ramp[(abits >> (3 * i)) & 7]
+        return _png_from_rgba(width, height, bytes(pix))
+
+    if fourcc == b"\x00\x00\x00\x00" and rgb_bits in (24, 32):
+        rmask, gmask, bmask, amask = struct.unpack_from("<4I", data, 92)
+        bpp = rgb_bits // 8
+        if len(data) < 128 + width * height * bpp:
+            return None
+        # 常见布局走快路：24 位 BGR / 32 位 BGRA
+        if (rgb_bits == 24 and rmask == 0xFF0000 and gmask == 0xFF00
+                and bmask == 0xFF):
+            src = data[128:128 + width * height * 3]
+            for i in range(width * height):
+                o = i * 4
+                pix[o] = src[i * 3 + 2]
+                pix[o + 1] = src[i * 3 + 1]
+                pix[o + 2] = src[i * 3]
+                pix[o + 3] = 255
+            return _png_from_rgba(width, height, bytes(pix))
+        if (rgb_bits == 32 and rmask == 0xFF0000 and gmask == 0xFF00
+                and bmask == 0xFF and amask == 0xFF000000):
+            src = data[128:128 + width * height * 4]
+            for i in range(width * height):
+                o = i * 4
+                pix[o] = src[i * 4 + 2]
+                pix[o + 1] = src[i * 4 + 1]
+                pix[o + 2] = src[i * 4]
+                pix[o + 3] = src[i * 4 + 3]
+            return _png_from_rgba(width, height, bytes(pix))
+        # 其它掩码：按位段通用抽取
+        def _shift(mask):
+            if not mask:
+                return 0, 0
+            s = 0
+            while not (mask >> s) & 1:
+                s += 1
+            bits = bin(mask >> s).count("1")
+            return s, bits
+
+        rs, rb = _shift(rmask)
+        gs, gb = _shift(gmask)
+        bs, bb = _shift(bmask)
+        as_, ab = _shift(amask)
+
+        def _comp(v, s, n, default=255):
+            if not n:
+                return default
+            x = (v >> s) & ((1 << n) - 1)
+            return x * 255 // ((1 << n) - 1)
+
+        src = data[128:128 + width * height * bpp]
+        for i in range(width * height):
+            v = int.from_bytes(src[i * bpp:(i + 1) * bpp], "little")
+            o = i * 4
+            pix[o] = _comp(v, rs, rb)
+            pix[o + 1] = _comp(v, gs, gb)
+            pix[o + 2] = _comp(v, bs, bb)
+            pix[o + 3] = _comp(v, as_, ab, 255)
+        return _png_from_rgba(width, height, bytes(pix))
+    return None
+
+
 def decode_image(data):
     """任意常见贴图字节 → PNG 字节；无法处理时返回 None。"""
     if not data:
@@ -366,6 +568,11 @@ def decode_image(data):
     if data[:2] == b"BM":
         try:
             return _decode_bmp(data)
+        except Exception:
+            return None
+    if data[:4] == b"DDS ":
+        try:
+            return _decode_dds(data)
         except Exception:
             return None
     if len(data) > 18 and data[2] in (2, 3, 10, 11) and data[1] in (0, 1):

@@ -497,6 +497,12 @@ class Mesh:
             mats, n_tex = _psk_mats(st["folder"], st["materials"],
                                     with_textures=True)
             _resolve_face_colors(self, st["face_mat"], mats)
+        elif kind == "xps":
+            import xpsio
+            m = xpsio.read_xps(st["path"])
+            mats, n_tex = _xps_mats(st["folder"], m.meshes,
+                                    with_textures=True)
+            _resolve_face_colors(self, st["face_mat"], mats)
         self._tex_state = None
         self.rev += 1
         return True
@@ -1262,12 +1268,97 @@ def mesh_from_psk(path, log=None, with_textures=True):
     return mesh
 
 
+def _xps_mats(folder, meshes, with_textures=True):
+    """XPS 的每个网格带一张漫反射贴图 → 预览材质表。
+
+    XPS 约定 textures[0] 就是基础色（实测样本 4 张一组时是 `_d/_l/_n/_s`）。
+    贴图找不到就退回中性灰。返回 (mats, 命中贴图数)。
+    """
+    finder = None
+    if with_textures:
+        try:
+            import xps2pmx
+            finder = xps2pmx._find_texture
+        except Exception:
+            finder = None
+    mats = []
+    n_tex = 0
+    for xm in meshes:
+        nm = xm.name or ""
+        img = None
+        if finder is not None and xm.diffuse:
+            try:
+                src = finder(folder, xm.diffuse)
+                if src:
+                    with open(src, "rb") as f:
+                        img = load_image(f.read())
+                    if img is not None:
+                        n_tex += 1
+            except Exception:
+                img = None
+        mats.append({"color": (204, 204, 204), "tex": img, "alpha": 1.0,
+                     "name": nm})
+    if not mats:
+        mats.append({"color": (204, 204, 204), "tex": None, "alpha": 1.0,
+                     "name": ""})
+    return mats, n_tex
+
+
+def mesh_from_xps(path, log=None, with_textures=True):
+    """XPS / XNALara → 预览网格。
+
+    换轴与 xps2pmx 完全一致：(x, y, z)_xps → (x, y, -z)，只把 Z 取反
+    （XPS 是「左手 +X、正面 +Z、上 +Y」，MMD 是「左手 +X、正面 -Z、上 +Y」，
+    推导见 convert/xps2pmx.py 顶部）。预览会按包围盒自动 fit，所以这里
+    **不必**归一到 MMD 的 20 单位。
+    """
+    import xpsio
+    m = xpsio.read_xps(path)
+    if not m.meshes:
+        raise ValueError("这个 XPS 里没有网格数据")
+    folder = os.path.dirname(os.path.abspath(path))
+    mesh = Mesh(os.path.splitext(os.path.basename(path))[0])
+
+    def xf(p):
+        return (p[0], p[1], -p[2])      # 与 xps2pmx.convert 的 xf 同一套
+
+    mats, n_tex = _xps_mats(folder, m.meshes, with_textures)
+    mesh.materials = mats
+    if log:
+        log("%s：顶点 %d · 三角面 %d · 骨骼 %d · 网格 %d（贴图 %d）"
+            % ("XPS" if m.is_generic2 else "XNALara", m.n_vertices,
+               m.n_triangles, len(m.bones), len(m.meshes), n_tex))
+
+    face_mat = []
+    for mi, xm in enumerate(m.meshes):
+        base = len(mesh.verts)
+        for vi in range(len(xm.positions)):
+            mesh.verts.append(xf(xm.positions[vi]))
+            mesh.uv.append(xm.uvs[vi] or (0.0, 0.0))
+        for (a, b, c) in xm.triangles:
+            mesh.tris.append((base + a, base + b, base + c))
+            face_mat.append(mi)
+
+    mesh.bones = [xf(b.position) for b in m.bones]
+
+    if with_textures:
+        mesh._tex_state = None
+    else:
+        mesh._tex_state = {"kind": "xps", "path": path, "folder": folder,
+                           "materials": [x.name for x in m.meshes],
+                           "face_mat": face_mat}
+
+    _resolve_face_colors(mesh, face_mat, mats)
+    return mesh
+
+
 def classify(path):
     ext = os.path.splitext(path)[1].lower()
     return {".fbx": "fbx", ".unitypackage": "unitypackage",
             ".vrm": "vrm", ".glb": "vrm", ".pmx": "pmx",
             ".uemodel": "uemodel",
-            ".psk": "psk", ".pskx": "psk"}.get(ext, "unknown")
+            ".psk": "psk", ".pskx": "psk",
+            ".xps": "xps"}.get(ext, "unknown")
 
 
 def load_preview(path, kind=None, log=None, flip_z=True, with_textures=True,
@@ -1294,6 +1385,8 @@ def load_preview(path, kind=None, log=None, flip_z=True, with_textures=True,
         return mesh_from_uemodel(path, log=log, with_textures=with_textures)
     if kind == "psk":
         return mesh_from_psk(path, log=log, with_textures=with_textures)
+    if kind == "xps":
+        return mesh_from_xps(path, log=log, with_textures=with_textures)
     raise ValueError("不支持的格式：%s" % path)
 
 
