@@ -26,11 +26,15 @@
 import json
 import os
 import queue
+import re
 import struct
 import sys
 import threading
 import time
 import traceback
+import urllib.error
+import urllib.request
+import webbrowser
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 if BASE not in sys.path:
@@ -67,6 +71,102 @@ try:
 except Exception:                                   # pragma: no cover
     HAS_CTYPES = False
 
+# ------------------------------------------------------------------- 版本 --
+# 版本号的唯一来源：界面显示、检查更新、Windows exe 的版本资源都从这里取。
+# 发版时把 tag 打成 v<__version__>（例如 v1.1.5），「检查更新」就是拿 tag 来比大小。
+# 当前值 = 已发布的最新 tag（v1.1.4）；下次发版前记得把它 +1。
+__version__ = "1.1.4"
+
+# 检查更新：主用 GitHub，连不上时自动改用 Gitee（国内直连 GitHub 常常不通）
+GH_REPO = "SaraKale/Model-To-PMX"
+GITEE_REPO = "sarakale/Model-To-PMX"
+GH_RELEASES_API = "https://api.github.com/repos/%s/releases" % GH_REPO
+GITEE_RELEASES_API = "https://gitee.com/api/v5/repos/%s/releases" % GITEE_REPO
+GITEE_TAGS_API = "https://gitee.com/api/v5/repos/%s/tags" % GITEE_REPO
+
+# 下载地址（写死在这里；第三项是提取码，没有就留空字符串）
+DOWNLOAD_SOURCES = (
+    ("bowlroll", "https://bowlroll.net/file/360556", ""),
+    ("aplaybox", "https://www.aplaybox.com/details/model/VVjaRGrpQxHO", ""),
+    ("lanzouu", "https://wwavg.lanzouu.com/b0rbforrc", "4onu"),
+    ("github", "https://github.com/SaraKale/Model-To-PMX/releases", ""),
+    ("gitee", "https://gitee.com/sarakale/Model-To-PMX/releases", ""),	
+)
+
+# 检测来源的显示名（品牌名不翻译）
+SOURCE_LABEL = {"github": "GitHub", "gitee": "Gitee"}
+
+
+def parse_version(text):
+    """把 v1.2.3 / 1.2 / 1.2.3-beta 之类解析成可比较的数字元组。"""
+    nums = re.findall(r"\d+", str(text or ""))
+    if not nums:
+        return (0,)
+    return tuple(int(n) for n in nums[:4])
+
+
+def version_label(tag):
+    """统一显示成 vX.Y.Z —— tag 本身可能已经带 v，别拼成 vv1.2.3。"""
+    s = str(tag or "").strip()
+    if not s:
+        return ""
+    mt = re.match(r"^[vV]?(\d.*)$", s)
+    return ("v" + mt.group(1)) if mt else s
+
+
+def _http_json(url, timeout):
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "ModelConvert/%s" % __version__,
+        "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _tags_github(data):
+    """GitHub /releases：优先正式版；一个都没有就放宽到「非 draft」。"""
+    out = [r.get("tag_name") for r in data
+           if isinstance(r, dict) and r.get("tag_name")
+           and not r.get("draft") and not r.get("prerelease")]
+    if out:
+        return out
+    return [r.get("tag_name") for r in data
+            if isinstance(r, dict) and r.get("tag_name")
+            and not r.get("draft")]
+
+
+def _tags_gitee_releases(data):
+    return [r.get("tag_name") for r in data
+            if isinstance(r, dict) and r.get("tag_name")
+            and not r.get("prerelease")]
+
+
+def _tags_gitee_tags(data):
+    return [t.get("name") for t in data
+            if isinstance(t, dict) and t.get("name")]
+
+
+def fetch_latest_version(timeout=12):
+    """依次尝试 GitHub → Gitee(releases) → Gitee(tags)。
+
+    返回 (最新 tag, 来源名)；任一源取到 tag 就返回。
+    全部失败抛最后一个异常；全都连上但都没有 tag 时返回 (None, None)。
+    """
+    last = None
+    for name, url, extract in (
+            ("github", GH_RELEASES_API, _tags_github),
+            ("gitee", GITEE_RELEASES_API, _tags_gitee_releases),
+            ("gitee", GITEE_TAGS_API, _tags_gitee_tags)):
+        try:
+            tags = [x for x in extract(_http_json(url, timeout)) if x]
+            if tags:
+                return max(tags, key=parse_version), name
+        except Exception as e:                      # 换下一个源继续试
+            last = e
+    if last is not None:
+        raise last
+    return None, None
+
+
 # ----------------------------------------------------------------- palette --
 BG = "#f4f6f9"
 CARD = "#ffffff"
@@ -91,7 +191,9 @@ F_DROP = (FONT, 13, "bold")
 F_DROP2 = (FONT, 9)
 F_ICON = (FONT, 26)
 F_ICON2 = (FONT, 15, "bold")
-F_MONO = ("Consolas", 9)
+# 日志字体：跟界面正文用同一字体族（原来用 Consolas，中文要靠字体回退，
+# 同一行里中英文像两种字体，看着不协调）
+F_LOG = (FONT, 9)
 
 SETTINGS_PATH = os.path.join(BASE, "config.json")
 PREVIEW_BASE = 480
@@ -280,6 +382,25 @@ LANG = {
         "status_none": "未生成文件",
         "dlg_title": "选择要转换的文件",
         "dlg_out": "选择输出目录",
+        # 检查更新
+        "btn_update": "检查更新",
+        "upd_title": "检查更新",
+        "upd_checking": "正在检查更新…（GitHub / Gitee）",
+        "upd_cur": "当前版本：",
+        "upd_new": "最新版本：",
+        "upd_dl_head": "请到以下地址下载：",
+        "upd_found": "发现新版本",
+        "upd_uptodate": "已是最新版本",
+        "upd_unknown": "无法连接更新服务器",
+        "upd_na": "未知",
+        "upd_key": "提取码：",
+        "upd_copy": "复制",
+        "upd_copied": "已复制",
+        "upd_close": "关闭",
+        "upd_latest": "已是最新版本 v{cur}。",
+        "upd_available_log": "发现新版本 {new}（当前 v{cur}）",
+        "upd_via": "（来源：{src}）",
+        "upd_fail": "检查更新失败：{err}",
     },
     "zh_TW": {
         "app_title": "模型轉換器 · FBX / VRM / PMX / PSK / XPS",
@@ -435,6 +556,25 @@ LANG = {
         "status_none": "未產生檔案",
         "dlg_title": "選擇要轉換的檔案",
         "dlg_out": "選擇輸出目錄",
+        # 檢查更新
+        "btn_update": "檢查更新",
+        "upd_title": "檢查更新",
+        "upd_checking": "正在檢查更新…（GitHub / Gitee）",
+        "upd_cur": "目前版本：",
+        "upd_new": "最新版本：",
+        "upd_dl_head": "請到以下網址下載：",
+        "upd_found": "發現新版本",
+        "upd_uptodate": "已是最新版本",
+        "upd_unknown": "無法連線更新伺服器",
+        "upd_na": "未知",
+        "upd_key": "提取碼：",
+        "upd_copy": "複製",
+        "upd_copied": "已複製",
+        "upd_close": "關閉",
+        "upd_latest": "已是最新版本 v{cur}。",
+        "upd_available_log": "發現新版本 {new}（目前 v{cur}）",
+        "upd_via": "（來源：{src}）",
+        "upd_fail": "檢查更新失敗：{err}",
     },
     "en": {
         "app_title": "Model Converter · FBX / VRM / PMX / PSK / XPS",
@@ -590,6 +730,25 @@ LANG = {
         "status_none": "No files generated",
         "dlg_title": "Select files to convert",
         "dlg_out": "Select output folder",
+        # Check for updates
+        "btn_update": "Check for updates",
+        "upd_title": "Check for updates",
+        "upd_checking": "Checking for updates… (GitHub / Gitee)",
+        "upd_cur": "Current version: ",
+        "upd_new": "Latest version: ",
+        "upd_dl_head": "Download from:",
+        "upd_found": "A new version is available",
+        "upd_uptodate": "You're up to date",
+        "upd_unknown": "Cannot reach the update server",
+        "upd_na": "unknown",
+        "upd_key": "Key: ",
+        "upd_copy": "Copy",
+        "upd_copied": "Copied",
+        "upd_close": "Close",
+        "upd_latest": "You're on the latest version (v{cur}).",
+        "upd_available_log": "New version {new} available (current v{cur})",
+        "upd_via": " (via {src})",
+        "upd_fail": "Update check failed: {err}",
     },
     "ja": {
         "app_title": "モデル変換 · FBX / VRM / PMX / PSK / XPS",
@@ -745,6 +904,25 @@ LANG = {
         "status_none": "ファイル未生成",
         "dlg_title": "変換するファイルを選択",
         "dlg_out": "出力フォルダを選択",
+        # アップデート確認
+        "btn_update": "アップデート確認",
+        "upd_title": "アップデート確認",
+        "upd_checking": "アップデートを確認中…（GitHub / Gitee）",
+        "upd_cur": "現在のバージョン：",
+        "upd_new": "最新バージョン：",
+        "upd_dl_head": "以下からダウンロードしてください：",
+        "upd_found": "新しいバージョンがあります",
+        "upd_uptodate": "最新バージョンです",
+        "upd_unknown": "更新サーバーに接続できません",
+        "upd_na": "不明",
+        "upd_key": "キー：",
+        "upd_copy": "コピー",
+        "upd_copied": "コピー済み",
+        "upd_close": "閉じる",
+        "upd_latest": "最新バージョンです（v{cur}）。",
+        "upd_available_log": "新しいバージョン {new} があります（現在 v{cur}）",
+        "upd_via": "（{src} 経由）",
+        "upd_fail": "アップデート確認に失敗しました：{err}",
     },
 }
 LANG_NAMES = {"zh_CN": "简体中文", "zh_TW": "繁體中文", "en": "English", "ja": "日本語"}
@@ -1281,7 +1459,7 @@ class ConverterApp:
     # ------------------------------------------------------------- layout --
     def _build(self):
         r = self.root
-        r.title(t("app_title"))
+        r.title("%s  v%s" % (t("app_title"), __version__))
         r.configure(bg=BG)
         # 右侧要放整条预览栏，窗口下限宽度得留够
         w = max(px(920), min(px(1240), r.winfo_screenwidth() - px(60)))
@@ -1317,8 +1495,17 @@ class ConverterApp:
                                      command=self._on_zoom)
         self._style_om(self.om_zoom, width=14)
         self.om_zoom.pack(side="left")
-        tk.Label(head, text=t("subtitle"),
-                 font=F_SUB, bg=BG, fg=MUTED).pack(anchor="w", pady=(px(2), 0))
+        # 副标题行右侧：版本号 + 「检查更新」（版本号取自 main.py 顶部的 __version__）
+        # 先 pack 右侧控件，保证窄窗口时被挤掉的是副标题而不是按钮。
+        subrow = tk.Frame(head, bg=BG)
+        subrow.pack(fill="x", pady=(px(2), 0))
+        self.btn_upd = self._btn(subrow, t("btn_update"), self.check_update,
+                                 kind="ghost", padx=px(10), pady=px(2))
+        self.btn_upd.pack(side="right")
+        tk.Label(subrow, text="v" + __version__, font=F_SMALL, bg=BG,
+                 fg=FAINT).pack(side="right", padx=(0, px(10)))
+        tk.Label(subrow, text=t("subtitle"), font=F_SUB, bg=BG, fg=MUTED,
+                 anchor="w").pack(side="left", fill="x", expand=True)
 
         # ---- 主体：左右分栏（Blender 那种可以拖动分割条的排版）
         # 左栏 = 拖放 + 选项 + 按钮 + 日志；右栏 = 整条高度的模型预览。
@@ -1364,7 +1551,7 @@ class ConverterApp:
         self.lbl_status = tk.Label(lhead, text=t("status_wait"), font=F_SMALL,
                                    bg=CARD, fg=MUTED)
         self.lbl_status.pack(side="right")
-        self.txt = tk.Text(logbox, font=F_MONO, bg=CARD, fg=TXT, relief="flat",
+        self.txt = tk.Text(logbox, font=F_LOG, bg=CARD, fg=TXT, relief="flat",
                            wrap="none", height=6, highlightthickness=0,
                            padx=px(10), pady=px(8), insertbackground=TXT)
         sb = tk.Scrollbar(logbox, command=self.txt.yview, relief="flat",
@@ -2382,6 +2569,177 @@ class ConverterApp:
         except Exception as e:
             messagebox.showerror(t("msg_open_fail"), str(e))
 
+    # --------------------------------------------------------- 检查更新 --
+    def check_update(self):
+        """后台查最新 tag（GitHub → Gitee 兜底），跟 __version__ 比大小。"""
+        if getattr(self, "_upd_busy", False):
+            return
+        self._upd_busy = True
+        try:
+            self.btn_upd.configure(state="disabled")
+        except Exception:
+            pass
+        self.log(t("upd_checking"), "info")
+        threading.Thread(target=self._update_worker, daemon=True).start()
+
+    def _update_worker(self):
+        # 网络请求放后台线程，结果通过队列回主线程（见 _pump）
+        try:
+            tag, src = fetch_latest_version()
+            self.q.put(("update", {"status": "ok", "tag": tag, "source": src}))
+        except Exception as e:
+            self.q.put(("update", {"status": "error",
+                                   "msg": "%s: %s" % (type(e).__name__, e)}))
+
+    def _on_update_result(self, info):
+        # 整体兜底：这个回调跑在 _pump 的循环里，抛异常会把界面刷新一起带崩
+        try:
+            self._upd_busy = False
+            try:
+                self.btn_upd.configure(state="normal")
+            except Exception:
+                pass
+            info = info or {}
+            ok = info.get("status") == "ok"
+            tag = info.get("tag") if ok else None
+            src = SOURCE_LABEL.get(info.get("source"), "") if ok else ""
+            via = t("upd_via", src=src) if src else ""
+            if tag and parse_version(tag) > parse_version(__version__):
+                self.log(t("upd_available_log", new=tag, cur=__version__)
+                         + via, "head")
+            elif tag:
+                self.log(t("upd_latest", cur=__version__) + via, "ok")
+            else:
+                self.log(t("upd_unknown"), "warn")
+            self._show_update_window(tag, info.get("msg", ""))
+        except Exception as e:
+            self.log(t("upd_fail", err="%s: %s" % (type(e).__name__, e)), "err")
+
+    def _show_update_window(self, tag, err=""):
+        """弹「当前版本 / 最新版本 / 下载地址」窗口。"""
+        cur = __version__
+        newer = bool(tag) and parse_version(tag) > parse_version(cur)
+        if newer:
+            head, head_fg = t("upd_found"), ACCENT
+        elif tag:
+            head, head_fg = t("upd_uptodate"), OK
+        else:
+            head, head_fg = t("upd_unknown"), WARN
+
+        old = getattr(self, "_upd_win", None)      # 已经开着就先关掉，别叠窗
+        if old is not None:
+            try:
+                old.destroy()
+            except Exception:
+                pass
+        win = tk.Toplevel(self.root)
+        self._upd_win = win
+        win.title(t("upd_title"))
+        win.configure(bg=BG)
+        try:
+            win.transient(self.root)
+        except Exception:
+            pass
+
+        box = tk.Frame(win, bg=CARD, highlightthickness=1,
+                       highlightbackground=BORDER)
+        box.pack(fill="both", expand=True, padx=px(14), pady=px(14))
+        pad = tk.Frame(box, bg=CARD)
+        pad.pack(fill="both", expand=True, padx=px(18), pady=px(16))
+
+        tk.Label(pad, text=head, font=F_BOLD, bg=CARD, fg=head_fg,
+                 anchor="w").pack(fill="x")
+        self._upd_vrow(pad, t("upd_cur"), version_label(cur), TXT)
+        self._upd_vrow(pad, t("upd_new"),
+                       version_label(tag) if tag else t("upd_na"),
+                       head_fg if tag else MUTED)
+
+        tk.Frame(pad, bg=BORDER, height=max(1, px(1))).pack(
+            fill="x", pady=(px(12), 0))
+        tk.Label(pad, text=t("upd_dl_head"), font=F_BOLD, bg=CARD, fg=TXT,
+                 anchor="w").pack(fill="x", pady=(px(10), 0))
+        for name, url, key in DOWNLOAD_SOURCES:
+            self._upd_dlrow(pad, name, url, key)
+
+        if err:
+            tk.Label(pad, text=t("upd_fail", err=err), font=F_SMALL, bg=CARD,
+                     fg=WARN, anchor="w", justify="left",
+                     wraplength=px(540)).pack(fill="x", pady=(px(10), 0))
+
+        foot = tk.Frame(pad, bg=CARD)
+        foot.pack(fill="x", pady=(px(16), 0))
+        self._btn(foot, t("upd_close"), win.destroy,
+                  kind="soft").pack(side="right")
+
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+        win.update_idletasks()
+        try:
+            w = max(win.winfo_reqwidth(), px(520))
+            h = win.winfo_reqheight()
+            x = self.root.winfo_rootx() + (self.root.winfo_width() - w) // 2
+            y = self.root.winfo_rooty() + (self.root.winfo_height() - h) // 3
+            win.geometry("%dx%d+%d+%d" % (w, h, max(0, x), max(0, y)))
+        except Exception:
+            pass
+        try:
+            win.lift()
+            win.focus_set()
+        except Exception:
+            pass
+
+    def _upd_vrow(self, parent, label, value, color):
+        r = tk.Frame(parent, bg=CARD)
+        r.pack(fill="x", pady=(px(8), 0))
+        tk.Label(r, text=label, font=F_BODY, bg=CARD, fg=MUTED,
+                 anchor="w").pack(side="left")
+        tk.Label(r, text=value, font=F_BOLD, bg=CARD, fg=color,
+                 anchor="w").pack(side="left")
+
+    def _upd_dlrow(self, parent, name, url, key):
+        """一行下载地址：平台名 + 可点击链接（+ 提取码）+ 复制按钮。"""
+        row = tk.Frame(parent, bg=CARD)
+        row.pack(fill="x", pady=(px(8), 0))
+        tk.Label(row, text=name, font=F_SMALL, bg=CARD, fg=MUTED,
+                 width=10, anchor="w").pack(side="left")
+        lnk = tk.Label(row, text=url, font=F_BODY, bg=CARD, fg=ACCENT,
+                       anchor="w", cursor="hand2")
+        lnk.pack(side="left")
+        lnk.bind("<Button-1>", lambda e, u=url: self._open_url(u))
+        lnk.bind("<Enter>", lambda e: lnk.configure(fg=ACCENT_HOVER))
+        lnk.bind("<Leave>", lambda e: lnk.configure(fg=ACCENT))
+
+        if key:
+            tk.Label(row, text="%s%s" % (t("upd_key"), key), font=F_SMALL,
+                     bg=CARD, fg=TXT).pack(side="left", padx=(px(10), 0))
+        copy_text = url + (("\n" + key) if key else "")
+        btn = self._btn(row, t("upd_copy"), None, kind="ghost",
+                        padx=px(8), pady=px(1))
+        btn.configure(font=F_SMALL,
+                      command=lambda b=btn, tx=copy_text: self._copy_text(tx, b))
+        btn.pack(side="right")
+
+    def _copy_text(self, text, btn=None):
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+        except Exception:
+            return
+        self.log(text.replace("\n", "  "), "info")
+        if btn is not None:                        # 按钮上闪一下「已复制」
+            try:
+                old = btn.cget("text")
+                btn.configure(text=t("upd_copied"))
+                btn.after(1200, lambda: btn.configure(text=old))
+            except Exception:
+                pass
+
+    def _open_url(self, url):
+        try:
+            webbrowser.open(url)
+        except Exception:
+            self.log(url, "info")
+
     def start_from_ui(self):
         if self.busy:
             return
@@ -3217,6 +3575,8 @@ class ConverterApp:
                     self.log(msg[1], "err")
                 elif kind == "done":
                     self._finish(msg[1], msg[2])
+                elif kind == "update":
+                    self._on_update_result(msg[1])
         except queue.Empty:
             pass
         self.root.after(60, self._pump)

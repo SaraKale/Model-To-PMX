@@ -1,4 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+import re
 import sys
 
 app_name = 'ModelConvert'
@@ -13,6 +15,58 @@ elif is_mac:
     icon_file = 'MC_2.icns'
 else:
     icon_file = None
+
+
+# ---- 版本号 --------------------------------------------------------------
+# 从 main.py 顶部读 __version__（唯一来源），生成 PyInstaller 的版本资源文件。
+# 这样 exe 的「属性 → 详细信息」里就有版本号，且和界面显示 / 检查更新同源。
+def _read_version():
+    try:
+        with open('main.py', 'r', encoding='utf-8') as f:
+            m = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']',
+                          f.read(), re.M)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return '0.0.0'
+
+
+app_version = _read_version()
+_v = [int(x) for x in (re.findall(r'\d+', app_version) + ['0', '0', '0'])[:3]]
+
+version_file = None
+if is_win:
+    version_file = os.path.join('build', 'version_info.txt')
+    os.makedirs('build', exist_ok=True)
+    with open(version_file, 'w', encoding='utf-8') as f:
+        f.write("""VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(%d, %d, %d, 0),
+    prodvers=(%d, %d, %d, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        '040904B0',
+        [StringStruct('CompanyName', 'SaraKale'),
+         StringStruct('FileDescription', 'Model Converter'),
+         StringStruct('FileVersion', '%s'),
+         StringStruct('InternalName', 'ModelConvert'),
+         StringStruct('OriginalFilename', 'ModelConvert.exe'),
+         StringStruct('ProductName', 'ModelConvert'),
+         StringStruct('ProductVersion', '%s')])
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+""" % (_v[0], _v[1], _v[2], _v[0], _v[1], _v[2], app_version, app_version))
 
 a = Analysis(
     ['main.py'],
@@ -44,6 +98,7 @@ exe = EXE(
     exclude_binaries=True,
     name=app_name,
     icon=icon_file,
+    version=version_file,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -69,4 +124,5 @@ if is_mac:
         name=f'{app_name}.app',
         icon=icon_file,
         bundle_identifier='com.modelconvert.app',
+        version=app_version,
     )

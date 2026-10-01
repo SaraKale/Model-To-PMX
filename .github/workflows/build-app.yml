@@ -68,6 +68,18 @@ jobs:
         run: |
           pyinstaller main.spec --noconfirm
 
+      # 把 READMETXT/ 下的多语言说明 txt 放进产物根目录：
+      # Windows / Linux → dist/ModelConvert/（与 exe 同级）；
+      # macOS → .app 旁边（不写进 .app 内部，避免破坏其临时签名）。
+      - name: Bundle README txt files
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            cp READMETXT/*.txt dist/
+          else
+            cp READMETXT/*.txt dist/ModelConvert/
+          fi
+
       - name: Archive artifacts (Windows)
         if: runner.os == 'Windows'
         run: |
@@ -85,7 +97,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           cd dist
-          zip -r -y "../ModelConvert-${{ inputs.release_tag || github.ref_name }}-${{ matrix.arch_name }}.zip" ModelConvert.app
+          zip -r -y "../ModelConvert-${{ inputs.release_tag || github.ref_name }}-${{ matrix.arch_name }}.zip" ModelConvert.app *.txt
 
       - name: Upload zip artifact
         uses: actions/upload-artifact@v7
