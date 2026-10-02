@@ -473,6 +473,41 @@ def mmd_audit(m, path=None):
     if n:
         bad.append("%d 个顶点权重的骨骼索引越界（骨骼只有 %d 根）" % (n, nb))
 
+    # --- 3b. 孤儿顶点 & 材质顶点索引跨度 ---------------------------
+    # 这是「PMXEditor 能开、MMD 拖进去闪退」的另一大来源，2026-10-02 实测踩到：
+    # VRM/glTF 里一个 mesh 的多个 primitive 会共用同一份 POSITION 数组，靠各自的
+    # indices 按材质切分；如果转换时逐个 primitive 都完整复制一遍顶点，就会产出
+    # 大量没人引用的顶点，并把材质引用到的顶点索引整体推高（实测苏娅.vrm：
+    # 391157 个顶点里 332702 个是孤儿，材质索引最大到 391156）。
+    # MMD 是 D3D9 时代程序，渲染走 16 位索引缓冲，索引一旦 ≥ 65536 就会闪退。
+    if nv:
+        used = set(m["faces"])
+        orphan = nv - len(used)
+        pct = 100.0 * orphan / nv
+        if orphan and pct > 20.0:
+            bad.append("有 %d 个顶点（%.0f%%）没有被任何面引用 —— 白占内存，还会把"
+                       "材质引用到的顶点索引整体推高。常见成因：VRM/glTF 里一个 mesh "
+                       "的多个 primitive 共用同一份顶点数组，转换时逐 primitive "
+                       "复制了一遍" % (orphan, pct))
+        else:
+            ok.append("孤儿顶点 %d 个（占比 %.1f%%，可接受）" % (orphan, pct))
+
+    if m["materials"] and m["faces"]:
+        start = 0
+        spans = []
+        for mm in m["materials"]:
+            seg = m["faces"][start:start + mm["faces"]]
+            start += mm["faces"]
+            if seg and max(seg) >= 65535:
+                spans.append((mm["name"], max(seg)))
+        if spans:
+            bad.append("%d 个材质引用到的顶点索引 ≥ 65535（最大 %d，如「%s」）—— "
+                       "MMD 的 D3D9 渲染用 16 位索引缓冲，超限会直接闪退；"
+                       "多半是上面「孤儿顶点」那条的连带结果"
+                       % (len(spans), max(x[1] for x in spans), spans[0][0]))
+        else:
+            ok.append("所有材质引用的顶点索引都 < 65535")
+
     n = 0
     for mt in m["materials"]:
         for key in ("tex", "sph"):

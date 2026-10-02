@@ -482,6 +482,12 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
     target_slots = {}       # (mesh_i, prim_i, slot) → 全局顶点映射表
     prim_vertex_map = []    # 每个 primitive 的 local→global 列表
     prim_ctx = {}           # (mesh_i, prim_i) → 表情增量要过的线性变换素材
+    # 顶点去重缓存：(POSITION,NORMAL,TEXCOORD_0,JOINTS_0,WEIGHTS_0) 这组 accessor
+    # 完全相同的 primitive 共用一份顶点 → {局部顶点索引: 全局顶点索引}。
+    # 见下面顶点段的注释：UniGLTF 导出的 VRM 里，一个 mesh 的所有 primitive 会
+    # 指向同一个 POSITION accessor，各用自己的 indices 切材质；不去重的话每个
+    # primitive 都要把整份顶点重抄一遍。
+    vert_cache = {}
 
     for mesh_i, mesh in enumerate(meshes):
         node_i = _mesh_node_of(mesh_i)
@@ -517,9 +523,26 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
             # 的线性部分）——平移项在「差值」里天然抵消，只用线性部分。
             prim_ctx[(mesh_i, prim_i)] = (m, bind, jn, wt, has_weights)
 
-            base = len(pmx_verts)
-            l2g = []
-            for v in range(n):
+            # ---- 顶点：同 mesh 内属性 accessor 相同的 primitive 共用一份 ----
+            # UniGLTF（实测 2.64.1）导出的 VRM 是「一个 mesh 一份顶点数组 + 多个
+            # primitive 各带自己的 indices 按材质切分」，且所有 primitive 指向
+            # **同一个** POSITION/NORMAL/TEXCOORD_0/JOINTS_0/WEIGHTS_0 accessor。
+            # 以前这里对每个 primitive 都从头导出 range(n) 全部顶点，结果：
+            #   * 苏娅.vrm 导出 391157 个顶点，其中 332702 个没有任何面引用；
+            #   * 材质引用到的顶点索引被推到 391156，110 个材质里 100 个的索引
+            #     ≥ 65535 —— 远超 MMD（D3D9，16 位索引缓冲）能接受的范围，
+            #     拖进 MMD 直接闪退；
+            #   * 文件 25.6 MB，MMD 是 32 位程序，光顶点就白吃几十 MB 内存。
+            # 现在：只导出被 indices 真正引用到的顶点，且同 mesh 内 accessor
+            # 组合相同的 primitive 复用同一份顶点（vcache 负责映射）。
+            a = prim.get("attributes") or {}
+            vkey = (a.get("POSITION"), a.get("NORMAL"), a.get("TEXCOORD_0"),
+                    a.get("JOINTS_0"), a.get("WEIGHTS_0"))
+            vcache = vert_cache.get(vkey)
+            if vcache is None:
+                vcache = vert_cache[vkey] = {}
+            l2g = [-1] * n
+            for v in sorted(set(i for i in idx if 0 <= i < n)):
                 p = (pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2])
                 nv0 = ((nrm[v * 3], nrm[v * 3 + 1], nrm[v * 3 + 2])
                        if nrm else None)
@@ -596,19 +619,23 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
                                   "add_uv": [], "wtype": wtype,
                                   "wbones": wbones, "wweights": wweights,
                                   "sdef": None, "edge": 1.0})
-                l2g.append(len(pmx_verts) - 1)
+                vcache[v] = len(pmx_verts) - 1
+                l2g[v] = len(pmx_verts) - 1
 
             for t in range(0, len(idx) - 2, 3):
                 a, b, c = idx[t], idx[t + 1], idx[t + 2]
                 if a >= n or b >= n or c >= n:
                     continue
                 a, b, c = l2g[a], l2g[b], l2g[c]
+                if a < 0 or b < 0 or c < 0:
+                    continue
                 if reverse_winding:
                     a, c = c, a
                 pmx_faces.extend([a, b, c])
 
             prim_vertex_map.append({"mesh": mesh_i, "prim": prim_i,
-                                    "l2g": l2g, "node": node_i})
+                                    "l2g": l2g, "node": node_i,
+                                    "vkey": vkey})
             target_slots[(mesh_i, prim_i)] = l2g
 
             # ---- 材质
@@ -682,25 +709,37 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
                          (b20 * x + b21 * y + b22 * z) / wsum)
         return (d[0] * _ox_s, d[1] * _oy_s, d[2] * _oz_s)
 
-    # 每个 primitive 的 morph target 读成 {local_vertex: (dx,dy,dz)}
+    # 每个 primitive 的 morph target 读成 (target_accessor索引, {局部顶点: (dx,dy,dz)})。
+    # accessor 索引必须一起返回：同一 mesh 的多个 primitive 常常指向**同一个**
+    # target accessor（UniGLTF 的共享顶点布局），累加表情增量时要按
+    # (mesh, accessor, 局部顶点) 去重，否则共享的那份增量会被重复叠加 N 次。
+    # 另外这里加了缓存：同一个 (mesh, prim, slot) 会被反复取用（每个 expression
+    # 都要遍历一遍），重复解 accessor 会让转换慢得离谱。
+    _td_cache = {}
+
     def target_delta(mesh_i, prim_i, slot):
+        ck = (mesh_i, prim_i, slot)
+        hit = _td_cache.get(ck)
+        if hit is not None:
+            return hit
         mesh = _get(gltf, "meshes", mesh_i)
         if mesh is None:
-            return {}
+            _td_cache[ck] = (None, {})
+            return _td_cache[ck]
         prim = (mesh.get("primitives") or [])[prim_i]
         tg = (prim.get("targets") or [])[slot:slot + 1]
-        if not tg:
-            return {}
-        acc = tg[0].get("POSITION")
+        acc = tg[0].get("POSITION") if tg else None
         if acc is None:
-            return {}
+            _td_cache[ck] = (None, {})
+            return _td_cache[ck]
         arr = vrmio.read_accessor(gltf, bin_data, acc)
         out = {}
         for v in range(len(arr) // 3):
             dx, dy, dz = arr[v * 3], arr[v * 3 + 1], arr[v * 3 + 2]
             if abs(dx) + abs(dy) + abs(dz) > 1e-9:
                 out[v] = (dx, dy, dz)
-        return out
+        _td_cache[ck] = (acc, out)
+        return _td_cache[ck]
 
     used_targets = set()
     pmx_morphs = []
@@ -722,36 +761,38 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
         out = {}
         for b in binds or []:
             if "node" in b:                       # VRM 1.0
-                node_i = b["node"]
-                mesh_i = mesh_of_node.get(node_i)
+                mesh_i = mesh_of_node.get(b["node"])
                 slot = b.get("index", 0)
                 w = float(b.get("weight", 1.0)) * weight_scale
-                for pv in prim_vertex_map:
-                    if pv["mesh"] != mesh_i:
-                        continue
-                    used_targets.add((mesh_i, pv["prim"], slot))
-                    for lv, d in target_delta(mesh_i, pv["prim"], slot).items():
-                        if lv >= len(pv["l2g"]):
-                            continue
-                        d = delta_lin(mesh_i, pv["prim"], lv, d)
-                        g = pv["l2g"][lv]
-                        ox, oy, oz = out.get(g, (0.0, 0.0, 0.0))
-                        out[g] = (ox + d[0] * w, oy + d[1] * w, oz + d[2] * w)
             else:                                  # VRM 0.x
                 mesh_i = b.get("mesh", 0)
                 slot = b.get("index", 0)
                 w = float(b.get("weight", 100.0)) * weight_scale
-                for pv in prim_vertex_map:
-                    if pv["mesh"] != mesh_i:
+            # 去重作用域是「单个 bind」：同一 mesh 里共用同一组顶点 accessor 和
+            # 同一个 target accessor 的多个 primitive，会把同一份增量重复算 N 次，
+            # 按 (顶点accessor组合, target accessor, 局部顶点) 只累加一次；
+            # 但不同 bind（权重不同）必须各算各的，所以 seen 放在 bind 循环内。
+            seen = set()
+            for pv in prim_vertex_map:
+                if pv["mesh"] != mesh_i:
+                    continue
+                used_targets.add((mesh_i, pv["prim"], slot))
+                acc, td = target_delta(mesh_i, pv["prim"], slot)
+                if acc is None:
+                    continue
+                for lv, d in td.items():
+                    if lv >= len(pv["l2g"]):
                         continue
-                    used_targets.add((mesh_i, pv["prim"], slot))
-                    for lv, d in target_delta(mesh_i, pv["prim"], slot).items():
-                        if lv >= len(pv["l2g"]):
-                            continue
-                        d = delta_lin(mesh_i, pv["prim"], lv, d)
-                        g = pv["l2g"][lv]
-                        ox, oy, oz = out.get(g, (0.0, 0.0, 0.0))
-                        out[g] = (ox + d[0] * w, oy + d[1] * w, oz + d[2] * w)
+                    g = pv["l2g"][lv]
+                    if g < 0:
+                        continue
+                    k = (pv["vkey"], acc, lv)
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    d = delta_lin(mesh_i, pv["prim"], lv, d)
+                    ox, oy, oz = out.get(g, (0.0, 0.0, 0.0))
+                    out[g] = (ox + d[0] * w, oy + d[1] * w, oz + d[2] * w)
         return out
 
     if is1:
@@ -766,23 +807,40 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
             add_morph(grp.get("presetName") or grp.get("name") or "morph",
                       collect_binds(grp.get("binds"), 0.01))
 
-    # 没被任何 expression 用到的 target，按 targetNames 补上
+    # 没被任何 expression 用到的 target，按 targetNames 补上。
+    # 同一 mesh 的多个 primitive 常共享同一个 target accessor，必须按
+    # (mesh, slot, accessor) 只生成一次、并把所有引用该 accessor 的 primitive
+    # 合起来收集，否则会造出一堆内容重复、又各自只覆盖一部分顶点的表情。
     for mesh_i, mesh in enumerate(meshes):
         names = ((mesh.get("extras") or {}).get("targetNames") or [])
-        for prim_i, prim in enumerate(mesh.get("primitives") or []):
+        prims = mesh.get("primitives") or []
+        done = set()
+        for prim_i, prim in enumerate(prims):
             for slot in range(len(prim.get("targets") or [])):
-                key = (mesh_i, prim_i, slot)
-                if key in used_targets:
+                if (mesh_i, prim_i, slot) in used_targets:
                     continue
+                acc, td = target_delta(mesh_i, prim_i, slot)
+                if acc is None or not td:
+                    continue
+                if (mesh_i, slot, acc) in done:
+                    continue
+                done.add((mesh_i, slot, acc))
                 nm = names[slot] if slot < len(names) else "morph%d" % slot
                 d = {}
                 for pv in prim_vertex_map:
-                    if pv["mesh"] != mesh_i or pv["prim"] != prim_i:
+                    if pv["mesh"] != mesh_i:
                         continue
-                    for lv, dd in target_delta(mesh_i, prim_i, slot).items():
-                        if lv < len(pv["l2g"]):
-                            g = pv["l2g"][lv]
-                            d[g] = delta_lin(mesh_i, prim_i, lv, dd)
+                    pi2 = pv["prim"]
+                    tg2 = (prims[pi2].get("targets") or [])[slot:slot + 1]
+                    if not tg2 or tg2[0].get("POSITION") != acc:
+                        continue
+                    for lv, dd in td.items():
+                        if lv >= len(pv["l2g"]):
+                            continue
+                        g = pv["l2g"][lv]
+                        if g < 0:
+                            continue
+                        d[g] = delta_lin(mesh_i, pi2, lv, dd)
                 add_morph(nm, d)
     if pmx_morphs:
         _l("表情：%d 个（已转成 PMX 顶点表情）" % len(pmx_morphs))
