@@ -146,6 +146,14 @@ jobs:
       contents: write
 
     steps:
+      # release job 原来没有 checkout，工作区里没有 .git —— gh CLI 靠 git remote
+      # 推断「当前是哪个仓库」，没有 .git 就会直接退出码 1。补上 checkout，
+      # 下面 gh 的调用再加 --repo 双保险。
+      - name: Checkout Main
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
       - name: Download artifacts
         uses: actions/download-artifact@v8
         with:
@@ -191,4 +199,5 @@ jobs:
           gh release upload \
             "${{ inputs.release_tag }}" \
             release-artifacts/*.zip \
+            --repo "${{ github.repository }}" \
             --clobber
