@@ -75,7 +75,7 @@ except Exception:                                   # pragma: no cover
 # 版本号的唯一来源：界面显示、检查更新、Windows exe 的版本资源都从这里取。
 # 发版时把 tag 打成 v<__version__>（例如 v1.1.5），「检查更新」就是拿 tag 来比大小。
 # 当前值 = 已发布的最新 tag（v1.1.4）；下次发版前记得把它 +1。
-__version__ = "1.1.4"
+__version__ = "1.1.5"
 
 # 检查更新：主用 GitHub，连不上时自动改用 Gitee（国内直连 GitHub 常常不通）
 GH_REPO = "SaraKale/Model-To-PMX"

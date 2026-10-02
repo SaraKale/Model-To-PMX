@@ -53,6 +53,7 @@ https://x.com/SaraKale9
 
 Update history:
 
+2026-10-02 v1.1.5: Added version checking and fixed some crashes after dragging into MMD after VRM→PMX conversion.
 2026-10-01 v1.1.4：Added the XPS → PMX option.
 2026-09-27 v1.1.3: Fixed the scaling issue after converting uemodel to PMX, and added an option in UE to automatically align to the reference model.
 2026-09-25 v1.1.2:Added PMX → FBX and PMX → psk/pskx options; the output files will be saved in a folder with the same name.

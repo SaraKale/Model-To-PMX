@@ -48,6 +48,29 @@ jobs:
       - name: Checkout Main
         uses: actions/checkout@v5
 
+      # ---- 产物名消毒（2026-10-02 加）--------------------------------
+      # release_tag 是手填的输入框，很容易把「版本号 + 更新说明」整句粘进去。
+      # 一旦里面出现冒号 : 就会连环炸：
+      #   * Windows：PowerShell 把 "ModelConvert-v1.1.5: xxx" 里的 "v1.1.5:" 当成
+      #     盘符，Compress-Archive 直接报错退出（run #5 就是这样）；
+      #   * macOS / Linux：文件名合法、压缩能过，但 actions/upload-artifact
+      #     明确禁止产物名含 : " < > | * ? \ / 和换行，上传步骤失败。
+      # 这里统一算出一个只含 [A-Za-z0-9._-] 的安全值，专供产物名 / 文件名使用；
+      # 真正用于发布 Release 的 tag 仍然是原始值，不受影响。
+      - name: Resolve artifact tag
+        id: rel
+        shell: bash
+        env:
+          RAW_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          safe=$(printf '%s' "$RAW_TAG" \
+            | tr -c 'A-Za-z0-9._-' '-' \
+            | sed -e 's/-\{2,\}/-/g' -e 's/^[-.]*//' -e 's/[-.]*$//')
+          if [ -z "$safe" ]; then safe="build-${GITHUB_RUN_NUMBER}"; fi
+          printf 'raw  = %s\n' "$RAW_TAG"
+          printf 'safe = %s\n' "$safe"
+          echo "tag=$safe" >> "$GITHUB_OUTPUT"
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -85,25 +108,25 @@ jobs:
         run: |
           Compress-Archive `
             -Path dist/ModelConvert `
-            -DestinationPath "ModelConvert-${{ inputs.release_tag || github.ref_name }}-${{ matrix.arch_name }}.zip"
+            -DestinationPath "ModelConvert-${{ steps.rel.outputs.tag }}-${{ matrix.arch_name }}.zip"
 
       - name: Archive artifacts (Linux)
         if: runner.os == 'Linux'
         run: |
           cd dist
-          zip -r "../ModelConvert-${{ inputs.release_tag || github.ref_name }}-${{ matrix.arch_name }}.zip" ModelConvert
+          zip -r "../ModelConvert-${{ steps.rel.outputs.tag }}-${{ matrix.arch_name }}.zip" ModelConvert
 
       - name: Archive artifacts (macOS)
         if: runner.os == 'macOS'
         run: |
           cd dist
-          zip -r -y "../ModelConvert-${{ inputs.release_tag || github.ref_name }}-${{ matrix.arch_name }}.zip" ModelConvert.app *.txt
+          zip -r -y "../ModelConvert-${{ steps.rel.outputs.tag }}-${{ matrix.arch_name }}.zip" ModelConvert.app *.txt
 
       - name: Upload zip artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ModelConvert-${{ inputs.release_tag || github.ref_name }}-${{ matrix.arch_name }}
-          path: ModelConvert-${{ inputs.release_tag || github.ref_name }}-${{ matrix.arch_name }}.zip
+          name: ModelConvert-${{ steps.rel.outputs.tag }}-${{ matrix.arch_name }}
+          path: ModelConvert-${{ steps.rel.outputs.tag }}-${{ matrix.arch_name }}.zip
           if-no-files-found: error
 
   release:
@@ -154,8 +177,14 @@ jobs:
       # ========================================
       # 手动更新已有 Release
       # ========================================
+      # 加 github.ref_type != 'tag'：在 tag ref 上手动触发时，上面那步（按
+      # github.ref_name 建/更新 Release）已经会跑，这里再跑一次会拿
+      # inputs.release_tag 去 upload，两边动同一个 Release、互相打架。互斥更清楚。
       - name: Update existing Release
-        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        if: >
+          github.ref_type != 'tag' &&
+          github.event_name == 'workflow_dispatch' &&
+          inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

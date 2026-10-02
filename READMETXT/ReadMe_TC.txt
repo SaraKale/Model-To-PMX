@@ -9,7 +9,7 @@ PMX → VRM（0.x / 1.0）
 uemodel → PMX
 PMX → uemodel
 psk / pskx → PMX 
-PMX →FBX
+PMX → FBX
 PMX → psk / pskx
 XPS → PMX
 
@@ -52,6 +52,7 @@ https://x.com/SaraKale9
 
 更新歷史：
 
+2026-10-02 v1.1.5：增加版本檢測，修復部分 VRM→PMX 轉換後拖入MMD閃退問題。
 2026-10-01 v1.1.4：新增 XPS → PMX 選項。
 2026-09-27 v1.1.3：修復 uemodel 轉換PMX後比例問題，UE選項增加自動對齊到參考模型選項。
 2026-09-25 v1.1.2：新增 PMX →FBX，PMX → psk / pskx選項，輸出文件會輸出到同名文件夾。
