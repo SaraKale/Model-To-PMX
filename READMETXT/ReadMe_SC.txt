@@ -91,6 +91,7 @@ https://x.com/SaraKale9
 
 更新历史：
 
+2026-10-07 v1.1.7：修复FBX导入未识别贴图的问题。
 2026-10-05 v1.1.6：修复路径长度限制；修复 unitypackage 解包时元数据文件（asset.meta / pathname / preview.png）互相覆盖的问题。
 2026-10-02 v1.1.5：增加版本检测，修复部分 VRM→PMX 转换后拖入MMD闪退问题。
 2026-10-01 v1.1.4：新增 XPS → PMX 选项。

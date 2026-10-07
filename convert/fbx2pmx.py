@@ -348,6 +348,53 @@ def _clean_name(s):
     return s.split("\x00")[0]
 
 
+# Texture / Video 节点里图片路径的取法。**两条路都要走**，缺一条就会整类
+# 文件的贴图全丢：
+#
+#   1. Properties70 属性 —— 现代导出器（Blender、FBX SDK 7400+ 的原生导出）
+#      写 `P: "RelativeFilename", "KString", "", "", "tex\\a.png"`；
+#   2. 子节点 —— FBX 6.x 沿袭下来的老写法，也是不少游戏管线（本例
+#      monvpu.fbx）实际用的：`FileName` / `RelativeFilename` 是 Texture 的
+#      **子节点**，Properties70 里只剩 `Path` / `RelPath`。
+#
+# 只认 Properties70 时，第 2 类文件会拿到 rel=None，名字退化成节点显示名
+# （`贴图 #1` 这种本地化的「Texture #1」），既找不到文件也进不了 PMX——
+# 症状就是「Blender 里贴图链接正常，本工具预览和转换都没贴图」。
+#
+# 优先级：RelativeFilename > FileName/Filename > RelPath > Path。相对路径优先，
+# 因为绝对路径十有八九指向作者机器上的盘符（本例是 E:\shaonv\...）。
+# `Filename`（小写 n）是 FBX SDK 的 Video 节点旧字段名，本工程的 fbxout.py
+# 写出时也用它，一并认掉。
+_TEXTURE_PATH_KEYS = ("RelativeFilename", "FileName", "Filename",
+                      "RelPath", "Path")
+
+
+def _fbx_texture_path(node):
+    """从 Texture / Video 节点取图片路径，Properties70 与子节点都查。"""
+    if node is None:
+        return None
+    vals = {}
+    p70 = node.get("Properties70")
+    if p70:
+        for pr in p70.children:
+            if len(pr.props) >= 5:
+                vals.setdefault(pr.props[0], pr.props[4])
+    # 按优先级逐 key 查：同一个 key 先看属性、再看子节点，保证
+    # 「任何来源的 RelativeFilename」都压过「任何来源的 FileName」。
+    for key in _TEXTURE_PATH_KEYS:
+        v = vals.get(key)
+        if v:
+            v = v[0] if isinstance(v, list) else v
+            if isinstance(v, str) and v.strip():
+                return v
+        ch = node.get(key)
+        if ch and ch.props:
+            v = ch.props[0]
+            if isinstance(v, str) and v.strip():
+                return v
+    return None
+
+
 def _ns_strip(s):
     """剥掉 FBX 的 `Class::name` 命名空间前缀。
 
@@ -559,31 +606,26 @@ class Scene:
         game exports, as an *external* file referenced by RelativeFilename /
         FileName on the Texture (or its linked Video) node.  We only need the
         basename - the actual file is copied at convert() time if it exists.
+
+        路径的取法见 `_fbx_texture_path()`：属性与子节点两种写法都要认，
+        否则像 monvpu.fbx 这种「子节点写法」的文件会整批丢贴图。
         """
         self.textures = {}          # texture_id -> {"name": basename, "rel": path}
         for c in self.objects:
             if c.name != "Texture":
                 continue
             tid = c.props[0]
-            d = self._props70(c)
-            rel = None
-            for key in ("RelativeFilename", "FileName"):
-                v = d.get(key)
-                if v:
-                    rel = v[0] if isinstance(v, list) else v
-                    break
+            rel = _fbx_texture_path(c)
             if not rel:
                 vid = self.texture_video.get(tid)
                 if vid is not None:
-                    vn = self.byid.get(vid)
-                    if vn is not None:
-                        dv = self._props70(vn)
-                        for key in ("RelativeFilename", "FileName"):
-                            v = dv.get(key)
-                            if v:
-                                rel = v[0] if isinstance(v, list) else v
-                                break
-            name = os.path.basename(rel) if rel else _clean_name(c.props[1])
+                    rel = _fbx_texture_path(self.byid.get(vid))
+            if rel:
+                # 统一按 / 切，兼容 `tex\a.png` 这种 Windows 反斜杠相对路径
+                name = os.path.basename(rel.replace("\\", "/"))
+            else:
+                # 连路径都没有（纯内嵌 / 节点无文件名）：退回节点显示名
+                name = _clean_name(c.props[1]) if len(c.props) > 1 else ""
             name = name.split("\x00")[0]
             self.textures[tid] = {"name": name, "rel": rel}
 

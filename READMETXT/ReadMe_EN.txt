@@ -112,6 +112,7 @@ https://x.com/SaraKale9
 
 Update history:
 
+2026-10-07 v1.1.7: Fixed the issue where FBX imports did not recognize textures.
 2026-10-05 v1.1.6:Fix path length limit; fix metadata files (asset.meta / pathname / preview.png) overwriting each other when unpacking a unitypackage.
 2026-10-02 v1.1.5: Added version checking and fixed some crashes after dragging into MMD after VRM→PMX conversion.
 2026-10-01 v1.1.4: Added the XPS → PMX option.

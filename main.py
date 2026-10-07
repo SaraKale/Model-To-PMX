@@ -81,8 +81,8 @@ except Exception:                                   # pragma: no cover
 # ------------------------------------------------------------------- 版本 --
 # 版本号的唯一来源：界面显示、检查更新、Windows exe 的版本资源都从这里取。
 # 发版时把 tag 打成 v<__version__>（例如 v1.1.6），「检查更新」就是拿 tag 来比大小。
-# 当前值 = 已发布的最新 tag（v1.1.5）；下次发版前记得把它 +1。
-__version__ = "1.1.6"
+# 当前值 = 已发布的最新 tag；下次发版前记得把它 +1。
+__version__ = "1.1.7"
 
 # 检查更新：主用 GitHub，连不上时自动改用 Gitee（国内直连 GitHub 常常不通）
 GH_REPO = "SaraKale/Model-To-PMX"
@@ -233,7 +233,7 @@ KIND_LABEL = {"fbx": "FBX", "unitypackage": "Unity", "vrm": "VRM", "pmx": "PMX",
 # 界面所有文案集中在此；切换语言后通过 _rebuild() 重建即可整窗本地化。
 LANG = {
     "zh_CN": {
-        "app_title": "模型转换器 · FBX / VRM / PMX / PSK / XPS",
+        "app_title": "模型转换器",
         "subtitle": "将各类模型文件转换为PMX文件",
         "zoom_label": "界面缩放",
         "lang_label": "语言",
@@ -410,7 +410,7 @@ LANG = {
         "upd_fail": "检查更新失败：{err}",
     },
     "zh_TW": {
-        "app_title": "模型轉換器 · FBX / VRM / PMX / PSK / XPS",
+        "app_title": "模型轉換器",
         "subtitle": "將各類模型文件轉換為PMX文件",
         "zoom_label": "介面縮放",
         "lang_label": "語言",
@@ -584,7 +584,7 @@ LANG = {
         "upd_fail": "檢查更新失敗：{err}",
     },
     "en": {
-        "app_title": "Model Converter · FBX / VRM / PMX / PSK / XPS",
+        "app_title": "Model Converter",
         "subtitle": "Convert various model files into PMX files.",
         "zoom_label": "UI scale",
         "lang_label": "Language",
@@ -758,7 +758,7 @@ LANG = {
         "upd_fail": "Update check failed: {err}",
     },
     "ja": {
-        "app_title": "モデル変換 · FBX / VRM / PMX / PSK / XPS",
+        "app_title": "モデル変換",
         "subtitle": "各種モデルファイルをPMXファイルに変換します。",
         "zoom_label": "表示倍率",
         "lang_label": "言語",
