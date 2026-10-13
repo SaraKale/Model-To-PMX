@@ -91,6 +91,7 @@ https://x.com/SaraKale9
 
 更新歷史：
 
+2026-10-14 v1.1.8：修復部分 unitypackage 轉換問題，FBX選項增加保留無材質網格選項。
 2026-10-07 v1.1.7：修復FBX導入未識別貼圖的問題。
 2026-10-05 v1.1.6：修復路徑長度限製；修復 unitypackage 解包時元數據文件（asset.meta / pathname / preview.png）互相覆蓋的問題。
 2026-10-02 v1.1.5：增加版本檢測，修復部分 VRM→PMX 轉換後拖入MMD閃退問題。

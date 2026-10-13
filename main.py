@@ -82,7 +82,7 @@ except Exception:                                   # pragma: no cover
 # 版本号的唯一来源：界面显示、检查更新、Windows exe 的版本资源都从这里取。
 # 发版时把 tag 打成 v<__version__>（例如 v1.1.6），「检查更新」就是拿 tag 来比大小。
 # 当前值 = 已发布的最新 tag；下次发版前记得把它 +1。
-__version__ = "1.1.7"
+__version__ = "1.1.8"
 
 # 检查更新：主用 GitHub，连不上时自动改用 Gitee（国内直连 GitHub 常常不通）
 GH_REPO = "SaraKale/Model-To-PMX"
@@ -285,10 +285,14 @@ LANG = {
         "note_alpha": "（真透明贴图如蕾丝 / 丝袜必须保留；自动判不准时也保留，可手动覆盖）",
         "opt_facing": "FBX→PMX 自动判定朝向（脚尖 / 脸部重心）",
         "opt_face180": "强制额外转 180°（判错时手动覆盖）",
+        "opt_keepuntex": "保留无材质网格（Unity 包常需打开，否则模型可能为空）",
         "log_facing_auto": "朝向自动判定：{reason} → {turn}",
         "log_facing_off": "朝向自动判定已关闭，按手动设置：{turn}",
         "log_turn_on": "额外转 180°（3D 视口正对相机）",
         "log_turn_off": "不额外旋转",
+        "log_kept_untex": "⚠ 全部 {n} 个网格都没挂材质（FBX 里没有材质连接），已全部保留：{names}",
+        "log_skipped_untex": "已跳过 {n} 个无材质网格（效果片）：{names}",
+        "log_empty_pmx": "✗ 结果里一个顶点都没有——这个 FBX 可能不含网格，或全部被判为无材质。请勾选「保留无材质网格」后重试。",
         "log_alpha_head": "贴图透明通道（{mode}）：去掉 {stripped} 张 / 保留 {kept} 张 / 本就不透明 {opaque} 张",
         "log_alpha_strip_one": "  去掉 alpha {name}（{detail}）",
         "log_alpha_keep_one": "  保留 alpha {name}（{detail}）",
@@ -459,10 +463,14 @@ LANG = {
         "note_alpha": "（真透明貼圖如蕾絲 / 絲襪必須保留；自動判不準時也保留，可手動覆蓋）",
         "opt_facing": "FBX→PMX 自動判定朝向（腳尖 / 臉部重心）",
         "opt_face180": "強制額外轉 180°（判錯時手動覆蓋）",
+        "opt_keepuntex": "保留無材質網格（Unity 包常需開啟，否則模型可能為空）",
         "log_facing_auto": "朝向自動判定：{reason} → {turn}",
         "log_facing_off": "朝向自動判定已關閉，依手動設定：{turn}",
         "log_turn_on": "額外轉 180°（3D 視口正對相機）",
         "log_turn_off": "不額外旋轉",
+        "log_kept_untex": "⚠ 全部 {n} 個網格都沒掛材質（FBX 裡沒有材質連接），已全部保留：{names}",
+        "log_skipped_untex": "已跳過 {n} 個無材質網格（效果片）：{names}",
+        "log_empty_pmx": "✗ 結果裡一個頂點都沒有——這個 FBX 可能不含網格，或全部被判為無材質。請勾選「保留無材質網格」後重試。",
         "log_alpha_head": "貼圖透明通道（{mode}）：去掉 {stripped} 張 / 保留 {kept} 張 / 本就不透明 {opaque} 張",
         "log_alpha_strip_one": "  去掉 alpha {name}（{detail}）",
         "log_alpha_keep_one": "  保留 alpha {name}（{detail}）",
@@ -633,9 +641,13 @@ LANG = {
         "note_alpha": "(Real transparency such as lace / stockings must be kept; unclear cases are kept too and can be overridden)",
         "opt_facing": "FBX→PMX auto-detect facing (toe / face centroid)",
         "opt_face180": "Force an extra 180° turn (manual override)",
+        "opt_keepuntex": "Keep material-less meshes (needed for many Unity packages, else the model may come out empty)",
         "log_facing_auto": "Facing auto-detect: {reason} -> {turn}",
         "log_facing_off": "Facing auto-detect disabled, using manual setting: {turn}",
         "log_turn_on": "extra 180° turn applied (faces the camera)",
+        "log_kept_untex": "⚠ all {n} mesh(es) had no material (no material links in the FBX); kept them all: {names}",
+        "log_skipped_untex": "skipped {n} material-less mesh(es) (effect sheets): {names}",
+        "log_empty_pmx": "✗ the result has zero vertices — this FBX may contain no mesh, or every mesh was judged material-less. Turn on \"Keep material-less meshes\" and retry.",
         "log_turn_off": "no extra rotation",
         "log_alpha_head": "Texture alpha ({mode}): stripped {stripped} / kept {kept} / already opaque {opaque}",
         "log_alpha_strip_one": "  strip alpha {name} ({detail})",
@@ -807,9 +819,13 @@ LANG = {
         "note_alpha": "（レースやストッキングのような本来の透明は残す必要があります。判定できない場合も残し、手動で上書きできます）",
         "opt_facing": "FBX→PMX 向きを自動判定（つま先／顔の重心）",
         "opt_face180": "強制で 180° 追加回転（誤判定時の手動上書き）",
+        "opt_keepuntex": "マテリアル無しメッシュを保持（Unity パッケージで必要。切るとモデルが空になることがある）",
         "log_facing_auto": "向きの自動判定：{reason} → {turn}",
         "log_facing_off": "向きの自動判定はオフ、手動設定に従います：{turn}",
         "log_turn_on": "180° 追加回転しました（カメラ側を向く）",
+        "log_kept_untex": "⚠ {n} 個のメッシュすべてにマテリアルが無い（FBX にマテリアル接続が無い）ため、すべて保持しました：{names}",
+        "log_skipped_untex": "マテリアル無しメッシュを {n} 個スキップしました（エフェクト板）：{names}",
+        "log_empty_pmx": "✗ 頂点が 1 つもありません——この FBX にメッシュが無いか、すべてマテリアル無しと判定されました。「マテリアル無しメッシュを保持」をオンにして再試行してください。",
         "log_turn_off": "追加回転なし",
         "log_alpha_head": "テクスチャのアルファ（{mode}）：除去 {stripped} / 保持 {kept} / 元から不透明 {opaque}",
         "log_alpha_strip_one": "  アルファ除去 {name}（{detail}）",
@@ -1425,6 +1441,7 @@ class ConverterApp:
         self.var_alpha_mode = tk.StringVar(value=alpha_label("auto"))
         self.var_auto_facing = tk.BooleanVar(value=True)
         self.var_face180 = tk.BooleanVar(value=False)
+        self.var_keep_untex = tk.BooleanVar(value=False)
         self.var_two_sided = tk.BooleanVar(value=False)
         self.var_edge = tk.BooleanVar(value=False)
         # UE（UEFormat / .uemodel）
@@ -1707,6 +1724,7 @@ class ConverterApp:
                        command=self._rerender)
         self._bigcheck(tab_f, t("opt_face180"), self.var_face180,
                        command=self._rerender)
+        self._bigcheck(tab_f, t("opt_keepuntex"), self.var_keep_untex)
         row_a = tk.Frame(tab_f, bg=CARD)
         row_a.pack(anchor="w", padx=px(14), pady=(px(4), 0))
         tk.Label(row_a, text=t("opt_alpha"), font=F_BODY, bg=CARD,
@@ -2352,6 +2370,7 @@ class ConverterApp:
             self.var_alpha_mode.set(alpha_label(code))
             self.var_auto_facing.set(bool(s.get("auto_facing", True)))
             self.var_face180.set(bool(s.get("face_180", False)))
+            self.var_keep_untex.set(bool(s.get("keep_untextured", False)))
             self.var_ue_fbx.set(bool(s.get("ue_fbx", False)))
             self.var_ue_alpha.set(bool(s.get("ue_alpha", True)))
             self.var_ue_height.set(str(s.get("ue_height", "180")))
@@ -2414,6 +2433,7 @@ class ConverterApp:
                            "alpha_mode": alpha_code_of(self.var_alpha_mode.get()),
                            "auto_facing": self.var_auto_facing.get(),
                            "face_180": self.var_face180.get(),
+                           "keep_untextured": self.var_keep_untex.get(),
                            "ue_fbx": self.var_ue_fbx.get(),
                            "ue_alpha": self.var_ue_alpha.get(),
                            "ue_align": bool(self.var_ue_align.get()),
@@ -3056,6 +3076,7 @@ class ConverterApp:
             "alpha_mode": alpha_code_of(self.var_alpha_mode.get()),
             "auto_facing": bool(self.var_auto_facing.get()),
             "face_180": bool(self.var_face180.get()),
+            "keep_untextured": bool(self.var_keep_untex.get()),
             "ue_fbx": bool(self.var_ue_fbx.get()),
             "ue_alpha": bool(self.var_ue_alpha.get()),
             "ue_align": bool(self.var_ue_align.get()),
@@ -3496,7 +3517,23 @@ class ConverterApp:
                                  morphs=cfg.get("fbx_morphs", True),
                                  alpha_mode=cfg.get("alpha_mode", "auto"),
                                  auto_facing=cfg.get("auto_facing", True),
-                                 face_180=cfg.get("face_180", False))
+                                 face_180=cfg.get("face_180", False),
+                                 skip_untextured=cfg.get("skip_untextured",
+                                                         None))
+            # 「无材质网格」的去留必须写进日志：unitypackage 的 FBX 常常一个
+            # 材质连接都没有，以前是静默全丢、产出 0 顶点 0 面的空 PMX，
+            # 用户只看到「转换后没有内容」却不知道为什么。
+            _kept = st.get("kept_untextured") or []
+            _skip = st.get("skipped_untextured") or []
+            if _kept:
+                q.put(("log", t("log_kept_untex", n=len(_kept),
+                                names=", ".join(n for n, _ in _kept[:6])), "warn"))
+            if _skip:
+                q.put(("log", t("log_skipped_untex",
+                                n=len(_skip),
+                                names=", ".join(n for n, _ in _skip[:6])), "warn"))
+            if not st.get("verts"):
+                q.put(("log", t("log_empty_pmx"), "err"))
             # 朝向依据写进日志：判错了能看懂是凭什么判的、也能手动覆盖
             _turn = t("log_turn_on") if st.get("face_turn") else t("log_turn_off")
             if cfg.get("auto_facing", True):

@@ -112,6 +112,7 @@ https://x.com/SaraKale9
 
 Update history:
 
+2026-10-14 v1.1.8:Fixed some issues with Unity package conversions, and added an option in the FBX settings to preserve meshes without materials.
 2026-10-07 v1.1.7: Fixed the issue where FBX imports did not recognize textures.
 2026-10-05 v1.1.6:Fix path length limit; fix metadata files (asset.meta / pathname / preview.png) overwriting each other when unpacking a unitypackage.
 2026-10-02 v1.1.5: Added version checking and fixed some crashes after dragging into MMD after VRM→PMX conversion.

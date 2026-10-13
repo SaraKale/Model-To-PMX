@@ -1564,6 +1564,15 @@ def _mesh_has_no_material(g, model, scene, mats=None):
     网格导出去，在 MMD 里就是一块不透明的灰白大板子盖在裙子上（贴图看着像被
     "翻错"了，其实是底色被压住了）。C# 插件侧的日志同样把它标成 `材质 '?'`
     / 无贴图，产出的 PMX 里也不含这张网格，所以这里直接跳过。
+
+    ⚠ 这个判据**只能**用来决定「要不要保留原样」，不能用来判断「整个模型是否
+    为空」。Unity 的 .unitypackage 里，FBX 常常**一个材质连接都没有**（材质挂
+    在 .mat 资源 + prefab 的 MeshRenderer 上，不在 FBX 里）：实测
+    animest_megane 的 FBX 有 7 个网格 / 8071 三角形，但 model_materials /
+    geometry_materials 全空，于是每个网格都判成「无材质」而被 skip，
+    最终写出 295 字节、0 顶点 0 面的空 PMX。
+    所以调用方必须先看「跳过之后还剩不剩东西」，见下面 convert() 里的
+    `_mesh_has_no_material` 兜底逻辑。
     """
     if mats is None:
         mats = _mesh_materials(g, model, scene)
@@ -1576,6 +1585,12 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
             center=True, morphs=True, max_morphs=None, remove_alpha=None,
             alpha_mode=None, auto_facing=True, face_180=False,
             skip_untextured=True):
+    """skip_untextured 三态：
+
+        True  （CLI 默认）—— 丢掉无材质网格，但**保留**「全丢光就兜底」的安全网
+        False / None     —— 全部保留（GUI 走这条；.unitypackage 的 FBX 没有
+                            材质连接，只有全保留才拿得到模型）
+    """
     # ⚠ remove_alpha 的默认必须是 None（不是 False）：False 会被 alpha_mode_of
     #   当成「用户显式要 keep」，把「不指定就用 auto」的默认遮蔽掉。
     alpha_mode = alpha_mode_of(alpha_mode, remove_alpha)
@@ -1618,6 +1633,8 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
     # ---- per-mesh data
     mesh_data = []
     skipped_untextured = []       # 无材质网格（效果片）——默认丢掉
+    kept_untextured = []          # 因「全空兜底」而被迫保留下来的网格
+    pending_untextured = []       # 先攒着，等确定「不是全空」再决定丢不丢
     for gid in geo_ids:
         g = scene.byid[gid]
         mid = scene.geometry_model[gid]
@@ -1627,21 +1644,37 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
         nverts = len(verts) // 3
         tris = triangulate(pvi)
         mats = _mesh_materials(g, model, scene)
-        if skip_untextured and _mesh_has_no_material(g, model, scene, mats):
-            skipped_untextured.append((model.name, len(tris)))
-            if verbose:
-                print("  skip    %-22s tris=%-6d (no material / effect sheet)"
-                      % (model.name, len(tris)))
-            continue
         uv = sample_uv(g.get("LayerElementUV"), pvi)
         nrm = sample_normals(g.get("LayerElementNormal"), pvi)
         poly_mat = _poly_material_index(g, pvi, len(mats))
-        mesh_data.append({
+        rec = {
             "geo": g, "model": model, "verts": verts, "tris": tris,
             "uv": uv, "nrm": nrm, "nverts": nverts, "pvi": pvi,
             "mats": mats, "poly_mat": poly_mat,
             "geom": scene._geom_matrix(scene.byid.get(mid)),
-        })
+        }
+        if skip_untextured and _mesh_has_no_material(g, model, scene, mats):
+            pending_untextured.append(rec)
+        else:
+            mesh_data.append(rec)
+
+    # 兜底：如果「无材质」判据把所有网格都筛掉了，说明这个 FBX 根本不在几何体
+    # 上挂材质（Unity 的 .unitypackage 就是这样：材质在 .mat / prefab 里），
+    # 再照原样跳过只会写出 0 顶点 0 面的空 PMX。此时把它们全部保留，
+    # 让用户至少拿到模型；贴图没接上比整个模型消失要好得多。
+    if not mesh_data and pending_untextured:
+        mesh_data = pending_untextured
+        pending_untextured = []
+        kept_untextured = [(r["model"].name, len(r["tris"])) for r in mesh_data]
+        if verbose:
+            print("  keep    all %d mesh(es) kept: every mesh looked "
+                  "'material-less' (FBX carries no material links)" % len(mesh_data))
+    else:
+        for rec in pending_untextured:
+            skipped_untextured.append((rec["model"].name, len(rec["tris"])))
+            if verbose:
+                print("  skip    %-22s tris=%-6d (no material / effect sheet)"
+                      % (rec["model"].name, len(rec["tris"])))
 
     # ---- scale: MMD units put a character at roughly 20 units tall
     if scale_mode in ("mmd", "auto", None, ""):
@@ -2110,7 +2143,8 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
             "face_turn": bool(turn), "facing_reason": facing_reason,
             "alpha_mode": alpha_mode, "alpha": tex_stats,
             "textures": list(tex_list),
-            "skipped_untextured": skipped_untextured}
+            "skipped_untextured": skipped_untextured,
+            "kept_untextured": kept_untextured}
 
 
 def _bone_depth(m):
