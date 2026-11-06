@@ -24,6 +24,7 @@
     或  python main.py
 """
 import json
+import math
 import os
 import queue
 import re
@@ -62,6 +63,7 @@ import fbxout
 import pmx2psk
 import pmx2uemodel
 import pmx_check
+import pmx_recenter
 import pmx2vrm
 import psk2pmx
 import uemodel2pmx
@@ -82,7 +84,12 @@ except Exception:                                   # pragma: no cover
 # 版本号的唯一来源：界面显示、检查更新、Windows exe 的版本资源都从这里取。
 # 发版时把 tag 打成 v<__version__>（例如 v1.1.6），「检查更新」就是拿 tag 来比大小。
 # 当前值 = 已发布的最新 tag；下次发版前记得把它 +1。
-__version__ = "1.1.8"
+__version__ = "1.2.0"
+
+# 「工具」页签（对已有 PMX 单独做原点对齐）暂时不显示。
+# 功能代码、i18n 文案和 _recenter_existing() 全部保留；以后想恢复，
+# 把这个开关改成 True 即可，不用动其它地方。
+SHOW_TOOLS_TAB = False
 
 # 检查更新：主用 GitHub，连不上时自动改用 Gitee（国内直连 GitHub 常常不通）
 GH_REPO = "SaraKale/Model-To-PMX"
@@ -293,6 +300,7 @@ LANG = {
         "log_kept_untex": "⚠ 全部 {n} 个网格都没挂材质（FBX 里没有材质连接），已全部保留：{names}",
         "log_skipped_untex": "已跳过 {n} 个无材质网格（效果片）：{names}",
         "log_empty_pmx": "✗ 结果里一个顶点都没有——这个 FBX 可能不含网格，或全部被判为无材质。请勾选「保留无材质网格」后重试。",
+        "log_no_outdir": "✗ 输出目录建不出来，转换中止。常见原因：该目录只读、被杀毒/安全软件拦截、正被其它程序占用，或父目录不存在。换一个输出目录（比如放到 D 盘）再试。",
         "log_alpha_head": "贴图透明通道（{mode}）：去掉 {stripped} 张 / 保留 {kept} 张 / 本就不透明 {opaque} 张",
         "log_alpha_strip_one": "  去掉 alpha {name}（{detail}）",
         "log_alpha_keep_one": "  保留 alpha {name}（{detail}）",
@@ -373,7 +381,23 @@ LANG = {
         "opt_xps_fbx": "XPS → PMX 时同时导出 FBX 文件",
         "note_xps": "（.xps 是 XNALara / XPS 的模型格式，现在流通的基本都是 XPS 的 Generic Item 2 变体。xps→PMX 会换轴成 MMD 的 Y-up、按身高归一到 20 单位；XPS 的 +Z 是正面、MMD 的正面是 -Z，所以只把 Z 取反。骨骼按规则转成 MMD 标准日文名，贴图按网格记录的漫反射贴图在同目录找，原样拷进 textures/ 且**不去 alpha**——XPS 的 alpha 就是头发 / 睫毛的透明度，和 UE 贴图的 alpha 含义正好相反。DDS 也直接拷：MMD 本体支持 .dds 贴图，不需要转码）",
         "tab_output": "输出",
+        "tab_tools": "工具",
+        "opt_snap_origin": "输出的 PMX 强制对齐世界原点（含根骨）",
+        "note_snap_origin": "（顶点 X/Z 居中、脚底 Y=0，并把根骨钉在 (0,0,0)。旧文件不用重转，可用 convert/pmx_recenter.py 单独修）",
+        "tool_recenter_btn": "选择已有 PMX → 对齐到世界原点",
+        "tool_recenter_note": "（不需要源模型、不需要重转。直接修已经导出的 PMX：整体平移顶点 / 骨骼 / 刚体 / 关节，并把根骨放到 (0,0,0)。默认在同目录生成 <文件名>_centered.pmx，贴图相对路径保持有效；原文件不会被改动）",
+        "tool_recenter_pick": "选择要对齐的 PMX",
+        "tool_recenter_done": "已生成：{name}（整体平移 {off}）",
+        "tool_recenter_fail": "对齐失败：{err}",
+        "log_snap_origin": "原点对齐：{name} → 平移 {off}，根骨 (0,0,0)",
+        "log_snap_fail": "原点对齐失败（不影响转换结果）：{err}",
         "opt_subfolder": "输出到同名子文件夹（文件名_日期_序号）",
+        "opt_export_preview": "同时导出模型预览图（PNG）",
+        "prev_size": "预览图尺寸",
+        "prev_sizes": ["512", "768", "1024", "1536", "2048"],
+        "note_export_preview": "（转换完成后，把模型的正面预览渲染成 <文件名>_preview.png 放进输出目录，方便归档 / 参考。这是独立于转换的一步，导出失败只会在日志里提示，不影响模型文件。选「自动」以外的大尺寸、或模型面数很多时会慢一些；预览图尺寸越大，写盘时间越长）",
+        "log_preview_export": "导出预览图 {name}（{w}×{h}）",
+        "log_preview_fail": "导出预览图失败：{err}",
         "zoom_auto": "自动（跟随系统）",
         "msg_title": "提示",
         "msg_pick": "请先把 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx / .xps 文件拖进窗口，或点击拖放区域选择文件。",
@@ -471,6 +495,7 @@ LANG = {
         "log_kept_untex": "⚠ 全部 {n} 個網格都沒掛材質（FBX 裡沒有材質連接），已全部保留：{names}",
         "log_skipped_untex": "已跳過 {n} 個無材質網格（效果片）：{names}",
         "log_empty_pmx": "✗ 結果裡一個頂點都沒有——這個 FBX 可能不含網格，或全部被判為無材質。請勾選「保留無材質網格」後重試。",
+        "log_no_outdir": "✗ 輸出目錄建不出來，轉換中止。常見原因：該目錄唯讀、被防毒／安全軟體攔截、正被其它程式佔用，或父目錄不存在。換一個輸出目錄（例如放到 D 槽）再試。",
         "log_alpha_head": "貼圖透明通道（{mode}）：去掉 {stripped} 張 / 保留 {kept} 張 / 本就不透明 {opaque} 張",
         "log_alpha_strip_one": "  去掉 alpha {name}（{detail}）",
         "log_alpha_keep_one": "  保留 alpha {name}（{detail}）",
@@ -551,7 +576,23 @@ LANG = {
         "opt_xps_fbx": "XPS → PMX 時同時匯出 FBX 檔案",
         "note_xps": "（.xps 是 XNALara / XPS 的模型格式，現在流通的基本都是 XPS 的 Generic Item 2 變體。xps→PMX 會換軸成 MMD 的 Y-up、按身高歸一到 20 單位；XPS 的 +Z 是正面、MMD 的正面是 -Z，所以只把 Z 取反。骨骼按規則轉成 MMD 標準日文名，貼圖依網格記錄的漫反射貼圖在同目錄找，原樣拷進 textures/ 且**不去 alpha**——XPS 的 alpha 就是頭髮 / 睫毛的透明度，和 UE 貼圖的 alpha 含義正好相反。DDS 也直接拷：MMD 本體支援 .dds 貼圖，不需要轉碼）",
         "tab_output": "輸出",
+        "tab_tools": "工具",
+        "opt_snap_origin": "輸出的 PMX 強制對齊世界原點（含根骨）",
+        "note_snap_origin": "（頂點 X/Z 置中、腳底 Y=0，並把根骨釘在 (0,0,0)。舊檔不用重轉，可用 convert/pmx_recenter.py 單獨修）",
+        "tool_recenter_btn": "選擇已有 PMX → 對齊到世界原點",
+        "tool_recenter_note": "（不需要來源模型、不需要重轉。直接修已匯出的 PMX：整體平移頂點 / 骨骼 / 剛體 / 關節，並把根骨放到 (0,0,0)。預設在同目錄產生 <檔名>_centered.pmx，貼圖相對路徑保持有效；原檔不會被改動）",
+        "tool_recenter_pick": "選擇要對齊的 PMX",
+        "tool_recenter_done": "已產生：{name}（整體平移 {off}）",
+        "tool_recenter_fail": "對齊失敗：{err}",
+        "log_snap_origin": "原點對齊：{name} → 平移 {off}，根骨 (0,0,0)",
+        "log_snap_fail": "原點對齊失敗（不影響轉換結果）：{err}",
         "opt_subfolder": "輸出到同名子資料夾（檔名_日期_序號）",
+        "opt_export_preview": "同時匯出模型預覽圖（PNG）",
+        "prev_size": "預覽圖尺寸",
+        "prev_sizes": ["512", "768", "1024", "1536", "2048"],
+        "note_export_preview": "（轉換完成後，把模型的正面預覽算繪成 <檔名>_preview.png 放進輸出目錄，方便歸檔 / 參考。這是獨立於轉換的一步，匯出失敗只會在記錄裡提示，不影響模型檔案。選「自動」以外的大尺寸、或模型面數很多時會慢一些；預覽圖尺寸越大，寫入時間越長）",
+        "log_preview_export": "匯出預覽圖 {name}（{w}×{h}）",
+        "log_preview_fail": "匯出預覽圖失敗：{err}",
         "zoom_auto": "自動（跟隨系統）",
         "msg_title": "提示",
         "msg_pick": "請先把 .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx / .xps 檔案拖進視窗，或點擊拖放區域選擇檔案。",
@@ -648,6 +689,7 @@ LANG = {
         "log_kept_untex": "⚠ all {n} mesh(es) had no material (no material links in the FBX); kept them all: {names}",
         "log_skipped_untex": "skipped {n} material-less mesh(es) (effect sheets): {names}",
         "log_empty_pmx": "✗ the result has zero vertices — this FBX may contain no mesh, or every mesh was judged material-less. Turn on \"Keep material-less meshes\" and retry.",
+        "log_no_outdir": "✗ could not create the output folder, conversion aborted. Common causes: folder is read-only, blocked by antivirus/security software, locked by another program, or the parent folder is missing. Try a different output folder (e.g. on drive D).",
         "log_turn_off": "no extra rotation",
         "log_alpha_head": "Texture alpha ({mode}): stripped {stripped} / kept {kept} / already opaque {opaque}",
         "log_alpha_strip_one": "  strip alpha {name} ({detail})",
@@ -729,7 +771,23 @@ LANG = {
         "opt_xps_fbx": "Also export an FBX file when converting XPS → PMX",
         "note_xps": "(.xps is the XNALara / XPS model format; almost everything in circulation today is XPS's Generic Item 2 variant. xps → PMX re-maps axes to MMD's Y-up and normalises the height to 20 units; XPS has +Z as its front while MMD's front is -Z, so only Z is negated. Bones are renamed to MMD standard Japanese names by rule, and the diffuse texture recorded per mesh is looked up next to the source and copied into textures/ **with alpha kept** — in XPS the alpha channel really is hair / eyelash transparency, the opposite of Unreal textures. DDS is copied as-is too: MMD itself supports .dds textures, so no transcoding is needed)",
         "tab_output": "Output",
+        "tab_tools": "Tools",
+        "opt_snap_origin": "Force output PMX to the world origin (incl. root bone)",
+        "note_snap_origin": "(Centers vertices on X/Z, grounds feet at Y=0, and pins the root bone to (0,0,0). Old files need no re-conversion - patch them with convert/pmx_recenter.py.)",
+        "tool_recenter_btn": "Pick an existing PMX and align it to the world origin",
+        "tool_recenter_note": "(No source model, no re-conversion. Patches an exported PMX directly: translates vertices / bones / rigid bodies / joints and pins the root bone to (0,0,0). Writes <name>_centered.pmx in the same folder so relative texture paths keep working; the original file is left untouched.)",
+        "tool_recenter_pick": "Choose a PMX to align",
+        "tool_recenter_done": "Wrote {name} (translation {off})",
+        "tool_recenter_fail": "Alignment failed: {err}",
+        "log_snap_origin": "Origin align: {name} -> translation {off}, root bone at (0,0,0)",
+        "log_snap_fail": "Origin align failed (conversion result is unaffected): {err}",
         "opt_subfolder": "Write into a same-named subfolder (name_date_001)",
+        "opt_export_preview": "Also export a model preview image (PNG)",
+        "prev_size": "Preview size",
+        "prev_sizes": ["512", "768", "1024", "1536", "2048"],
+        "note_export_preview": "(After the conversion finishes, render the model's front view to <name>_preview.png in the output folder — handy for archiving / reference. This is a separate step from the conversion: if it fails you only get a note in the log, and your model files are unaffected. Large sizes or heavy meshes take longer; the bigger the image, the longer the write takes.)",
+        "log_preview_export": "Exported preview {name} ({w}×{h})",
+        "log_preview_fail": "Preview export failed: {err}",
         "zoom_auto": "Auto (follow system)",
         "msg_title": "Note",
         "msg_pick": "Please drop .fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx / .xps files into the window, or click the drop area to pick files.",
@@ -826,6 +884,7 @@ LANG = {
         "log_kept_untex": "⚠ {n} 個のメッシュすべてにマテリアルが無い（FBX にマテリアル接続が無い）ため、すべて保持しました：{names}",
         "log_skipped_untex": "マテリアル無しメッシュを {n} 個スキップしました（エフェクト板）：{names}",
         "log_empty_pmx": "✗ 頂点が 1 つもありません——この FBX にメッシュが無いか、すべてマテリアル無しと判定されました。「マテリアル無しメッシュを保持」をオンにして再試行してください。",
+        "log_no_outdir": "✗ 出力フォルダを作成できず、変換を中止しました。よくある原因：フォルダが読み取り専用、ウイルス対策／セキュリティソフトにブロックされている、他のプログラムが使用中、親フォルダが存在しない。別の出力先（例：D ドライブ）で再試行してください。",
         "log_turn_off": "追加回転なし",
         "log_alpha_head": "テクスチャのアルファ（{mode}）：除去 {stripped} / 保持 {kept} / 元から不透明 {opaque}",
         "log_alpha_strip_one": "  アルファ除去 {name}（{detail}）",
@@ -907,7 +966,23 @@ LANG = {
         "opt_xps_fbx": "XPS → PMX のときに FBX も同時出力",
         "note_xps": "（.xps は XNALara / XPS のモデル形式で、現在出回っているものはほぼ XPS の Generic Item 2 変種です。xps→PMX は MMD の Y-up に軸変換し身長を 20 単位に正規化します。XPS は +Z が正面、MMD は -Z が正面なので Z だけ反転します。ボーンは規則で MMD 標準の日本語名に変換し、テクスチャはメッシュごとに記録されたディフューズをソースと同じフォルダから探して textures/ へそのままコピーし、**アルファは外しません**——XPS のアルファは髪・まつ毛の透過度そのもので、UE テクスチャの alpha とは意味が逆だからです。DDS もそのままコピーします：MMD 本体が .dds テクスチャに対応しているため変換不要です）",
         "tab_output": "出力",
+        "tab_tools": "ツール",
+        "opt_snap_origin": "出力 PMX をワールド原点に強制整列（ルート骨を含む）",
+        "note_snap_origin": "（頂点の X/Z を中央揃え、足元を Y=0 に接地させ、ルート骨を (0,0,0) に固定します。古いファイルは再変換不要で、convert/pmx_recenter.py から単独で修正できます）",
+        "tool_recenter_btn": "既存の PMX を選んでワールド原点へ整列",
+        "tool_recenter_note": "（元モデルも再変換も不要。書き出し済み PMX を直接修正し、頂点 / ボーン / 剛体 / ジョイントをまとめて平行移動してルート骨を (0,0,0) に置きます。同じフォルダに <ファイル名>_centered.pmx を生成するためテクスチャの相対パスはそのまま。元ファイルは変更しません）",
+        "tool_recenter_pick": "整列する PMX を選択",
+        "tool_recenter_done": "出力しました：{name}（平行移動 {off}）",
+        "tool_recenter_fail": "整列に失敗：{err}",
+        "log_snap_origin": "原点整列：{name} → 平行移動 {off}、ルート骨 (0,0,0)",
+        "log_snap_fail": "原点整列に失敗（変換結果には影響しません）：{err}",
         "opt_subfolder": "同名のサブフォルダに出力（ファイル名_日付_連番）",
+        "opt_export_preview": "モデルのプレビュー画像（PNG）も出力する",
+        "prev_size": "プレビュー画像のサイズ",
+        "prev_sizes": ["512", "768", "1024", "1536", "2048"],
+        "note_export_preview": "（変換完了後に、モデルの正面プレビューを <ファイル名>_preview.png として出力フォルダへ書き出します。保管や確認用に便利です。これは変換とは別の処理で、書き出しに失敗してもログに表示されるだけで、モデルファイルには影響しません。大きいサイズや面数の多いモデルでは時間がかかります。画像が大きいほど書き込みにも時間がかかります）",
+        "log_preview_export": "プレビュー画像を出力 {name}（{w}×{h}）",
+        "log_preview_fail": "プレビュー画像の出力に失敗：{err}",
         "zoom_auto": "自動（システムに合わせる）",
         "msg_title": "注意",
         "msg_pick": ".fbx / .unitypackage / .vrm / .pmx / .uemodel / .psk / .pskx / .xps ファイルをウィンドウへドロップするか、ドロップ領域をクリックして選択してください。",
@@ -1444,6 +1519,8 @@ class ConverterApp:
         self.var_keep_untex = tk.BooleanVar(value=False)
         self.var_two_sided = tk.BooleanVar(value=False)
         self.var_edge = tk.BooleanVar(value=False)
+        # 转换完成后把输出 PMX 统一钉到世界原点（顶点 + 根骨）
+        self.var_snap_origin = tk.BooleanVar(value=True)
         # UE（UEFormat / .uemodel）
         self.var_ue_fbx = tk.BooleanVar(value=False)
         self.var_ue_alpha = tk.BooleanVar(value=True)
@@ -1467,6 +1544,9 @@ class ConverterApp:
         self.var_xps_unused = tk.BooleanVar(value=True)
         self.var_xps_fbx = tk.BooleanVar(value=False)
         self.var_subfolder = tk.BooleanVar(value=True)
+        # 输出选项卡：转换完成后额外导出模型正面预览图（PNG）
+        self.var_export_preview = tk.BooleanVar(value=False)
+        self.var_preview_size = tk.StringVar(value="1024")
         self._task_code = "auto"             # 任务方向内部代号（与语言无关）
         self.var_lang = tk.StringVar(value="zh_CN")
         self.zoom = None                      # None = 跟随系统 DPI
@@ -1715,6 +1795,15 @@ class ConverterApp:
                        command=self._rerender)
         self._bigcheck(tab_g, t("opt_open"), self.var_open_after)
         self._bigcheck(tab_g, t("opt_twosided"), self.var_two_sided)
+        self._bigcheck(tab_g, t("opt_snap_origin"), self.var_snap_origin)
+        lbl_snap = tk.Label(tab_g, text=t("note_snap_origin"), font=F_SUB,
+                            bg=CARD, fg=MUTED, justify="left", anchor="w")
+        lbl_snap.pack(fill="x", padx=px(28), pady=(0, px(8)))
+        # 必须 add="+"：tab_g 上已经绑了一个 <Configure> 给 lbl_hint，
+        # 直接 bind 会把那一个覆盖掉（窄窗口时提示文字不再折行）。
+        tab_g.bind("<Configure>",
+                   lambda e: lbl_snap.configure(
+                       wraplength=max(px(150), e.width - px(56))), add="+")
 
         # FBX 选项
         tab_f = self._tab(nb, t("tab_fbx"))
@@ -1859,6 +1948,44 @@ class ConverterApp:
         self.btn_browse_out = self._btn(rowo, t("browse"), self.pick_outdir,
                                         kind="ghost", padx=px(12), pady=px(4))
         self.btn_browse_out.pack(side="left")
+
+        # ---- 模型预览图导出（正面 PNG，方便归档 / 参考）
+        self._bigcheck(tab_o, t("opt_export_preview"),
+                       self.var_export_preview,
+                       command=self._toggle_preview_size)
+        rowpv = tk.Frame(tab_o, bg=CARD)
+        rowpv.pack(fill="x", padx=px(28), pady=(px(4), 0))
+        tk.Label(rowpv, text=t("prev_size"), font=F_SUB, bg=CARD,
+                 fg=MUTED).pack(side="left", padx=(0, px(8)))
+        self.om_prev_size = tk.OptionMenu(rowpv, self.var_preview_size,
+                                          *t("prev_sizes"))
+        self._style_om(self.om_prev_size, width=7)
+        self.om_prev_size.pack(side="left")
+        self.lbl_prev_note = tk.Label(tab_o, text=t("note_export_preview"),
+                                      font=F_SUB, bg=CARD, fg=MUTED,
+                                      justify="left", anchor="w")
+        self.lbl_prev_note.pack(fill="x", padx=px(28), pady=(px(4), px(12)))
+        tab_o.bind("<Configure>",
+                   lambda e: self.lbl_prev_note.configure(
+                       wraplength=max(px(150), e.width - px(56))))
+        self._toggle_preview_size()
+
+        # ---- 工具：把已有 PMX 直接对齐到世界原点（不需要源文件 / 重转）
+        # 暂时隐藏（SHOW_TOOLS_TAB=False）；命令行 convert/pmx_recenter.py 仍可用。
+        if SHOW_TOOLS_TAB:
+            tab_t = self._tab(nb, t("tab_tools"))
+            rowt = tk.Frame(tab_t, bg=CARD)
+            rowt.pack(fill="x", padx=px(14), pady=(px(12), px(4)))
+            self.btn_recenter = self._btn(
+                rowt, t("tool_recenter_btn"), self._recenter_existing,
+                kind="soft", padx=px(14), pady=px(8))
+            self.btn_recenter.pack(anchor="w")
+            lbl_rt = tk.Label(tab_t, text=t("tool_recenter_note"), font=F_SUB,
+                              bg=CARD, fg=MUTED, justify="left", anchor="w")
+            lbl_rt.pack(fill="x", padx=px(14), pady=(px(6), px(12)))
+            tab_t.bind("<Configure>",
+                       lambda e: lbl_rt.configure(
+                           wraplength=max(px(150), e.width - px(28))))
 
         # ---- 右栏：模型预览（整列高度，跟 Blender 的 3D 视图区一个位置）
         pvcard = self._card(right, t("preview_title"))
@@ -2354,6 +2481,7 @@ class ConverterApp:
             self.var_vrm_spec.set(s.get("vrm_spec", "1.0"))
             self.var_morphs.set(bool(s.get("export_morphs", True)))
             self.var_two_sided.set(bool(s.get("force_two_sided", False)))
+            self.var_snap_origin.set(bool(s.get("snap_origin", True)))
             self.var_edge.set(bool(s.get("vrm2pmx_edge", False)))
             self.var_center.set(bool(s.get("center", True)))
             self.var_fbx_morphs.set(bool(s.get("fbx_morphs", True)))
@@ -2390,6 +2518,10 @@ class ConverterApp:
             self.var_xps_unused.set(bool(s.get("xps_unused", True)))
             self.var_xps_fbx.set(bool(s.get("xps_fbx", False)))
             self.var_subfolder.set(bool(s.get("subfolder", True)))
+            self.var_export_preview.set(bool(s.get("export_preview", False)))
+            _ps = str(s.get("preview_size", "1024"))
+            self.var_preview_size.set(_ps if _ps in list(t("prev_sizes"))
+                                      else "1024")
             code = s.get("task", "auto")
             if code not in {c for _, c in TASK_CHOICES}:
                 code = TASK_BY_LABEL.get(code, "auto")  # 兼容旧版以标签存储的设置
@@ -2427,6 +2559,7 @@ class ConverterApp:
                            "vrm_spec": self.var_vrm_spec.get(),
                            "export_morphs": self.var_morphs.get(),
                            "force_two_sided": self.var_two_sided.get(),
+                           "snap_origin": self.var_snap_origin.get(),
                            "vrm2pmx_edge": self.var_edge.get(),
                            "center": self.var_center.get(),
                            "fbx_morphs": self.var_fbx_morphs.get(),
@@ -2453,6 +2586,8 @@ class ConverterApp:
                            "xps_unused": self.var_xps_unused.get(),
                            "xps_fbx": self.var_xps_fbx.get(),
                            "subfolder": bool(self.var_subfolder.get()),
+                           "export_preview": bool(self.var_export_preview.get()),
+                           "preview_size": self.var_preview_size.get(),
                            "split": getattr(self, "_split", 0.6),
                            "vsplit": getattr(self, "_vsplit", None)},
                           f, ensure_ascii=False, indent=2)
@@ -2500,6 +2635,15 @@ class ConverterApp:
         custom = self.var_scale_custom.get()
         self.ent_scale.configure(state="normal" if custom else "disabled",
                                  fg=TXT if custom else FAINT)
+
+    def _toggle_preview_size(self):
+        """未勾选「导出预览图」时，尺寸下拉与说明变灰但仍可见。"""
+        on = bool(self.var_export_preview.get())
+        try:
+            self.om_prev_size.configure(state="normal" if on else "disabled")
+            self.lbl_prev_note.configure(fg=MUTED if on else FAINT)
+        except Exception:
+            pass
 
     # -- uemodel 部件对齐到参考模型 ------------------------------------------
     def _pick_ue_align_ref(self):
@@ -3070,6 +3214,7 @@ class ConverterApp:
             "vrm_spec": (self.var_vrm_spec.get() or "1.0"),
             "export_morphs": bool(self.var_morphs.get()),
             "force_two_sided": bool(self.var_two_sided.get()),
+            "snap_origin": bool(self.var_snap_origin.get()),
             "edge": bool(self.var_edge.get()),
             "center": bool(self.var_center.get()),
             "fbx_morphs": bool(self.var_fbx_morphs.get()),
@@ -3083,6 +3228,8 @@ class ConverterApp:
             "ue_align_ref": self.var_ue_align_ref.get(),
             "ue_height": self.var_ue_height.get(),
             "subfolder": bool(self.var_subfolder.get()),
+            "export_preview": bool(self.var_export_preview.get()),
+            "preview_size": self.var_preview_size.get(),
             "psk_jp": bool(self.var_psk_jp.get()),
             "psk_ik": bool(self.var_psk_ik.get()),
             "psk_morphs": bool(self.var_psk_morphs.get()),
@@ -3118,9 +3265,17 @@ class ConverterApp:
         old_out = sys.stdout
         sys.stdout = stdout_redirect(self.q)
         made = []
+        extra = []
         try:
             for path in files:
-                made.extend(self._convert_one(path, cfg))
+                one, folder = self._convert_one(path, cfg)
+                made.extend(one)
+                # 附加产物（模型预览图）与模型文件分开计数，不进 made。
+                # 目录直接用 _convert_one 返回的那个，保证跟模型文件同处一地
+                # （再算一次 _out_folder 会凭空多建一个编号目录）。
+                if cfg.get("export_preview") and folder:
+                    extra.extend(
+                        self._after_convert_preview(path, one, folder, cfg))
         except Exception:
             self.q.put(("log", traceback.format_exc()))
             self.q.put(("err", "转换失败，详见日志"))
@@ -3130,7 +3285,33 @@ class ConverterApp:
             except Exception:
                 pass
             sys.stdout = old_out
-            self.q.put(("done", made, cfg))
+            self.q.put(("done", made, cfg, extra))
+
+    def _recenter_existing(self):
+        """工具页：选一个已经导出的 PMX，直接对齐到世界原点。
+
+        不需要源模型、不需要重转；原文件保持不动，同目录多出一个
+        <名字>_centered.pmx（贴图相对路径因此仍然有效）。
+        """
+        p = filedialog.askopenfilename(
+            title=t("tool_recenter_pick"),
+            filetypes=[("PMX", "*.pmx"), ("*", "*.*")])
+        if not p:
+            return
+        try:
+            info = pmx_recenter.recenter_file(
+                p, mode="ground", snap_root=True, log=self._logfn())
+        except Exception as e:
+            msg = t("tool_recenter_fail", err=e)
+            self.q.put(("log", msg, "err"))
+            messagebox.showerror(t("tool_recenter_pick"), msg)
+            return
+        off = tuple(round(x, 3) for x in info["offset"])
+        name = os.path.basename(info["dst"])
+        self.q.put(("log", t("log_snap_origin", name=name, off=off), "ok"))
+        self.q.put(("log", info["dst"], "ok"))
+        messagebox.showinfo(t("tool_recenter_pick"),
+                            t("tool_recenter_done", name=name, off=off))
 
     def _logfn(self):
         """给转换脚本用的日志回调（在 worker 线程里跑，只能往队列里塞）。"""
@@ -3141,6 +3322,46 @@ class ConverterApp:
         return fn
 
     def _convert_one(self, path, cfg):
+        """转换一个文件 + 统一的原点对齐后处理，返回 (made, folder)。"""
+        made, folder = self._convert_one_core(path, cfg)
+        # center=False 表示用户明确要保留源文件的世界位置，别被后处理覆盖。
+        if (made and cfg.get("snap_origin", True)
+                and cfg.get("center", True)):
+            made = self._snap_outputs(made, path)
+        return (made, folder)
+
+    def _snap_outputs(self, made, src):
+        """把本次产出的 PMX 统一钉到世界原点（网格 + 根骨）。
+
+        各转换器内部本来就按顶点包围盒居中，但根骨还留在源模型的位置
+        （例如 (0, 0, -1.6)），MMD 里以骨骼为参照看就是「整体偏在一边」。
+        这里对所有来源统一收口。出错只记日志，绝不把一次成功的转换判成失败。
+        """
+        skip = os.path.normcase(os.path.abspath(src))
+        out = []
+        for p in made or []:
+            if (p and p.lower().endswith(".pmx") and os.path.isfile(p)
+                    and os.path.normcase(os.path.abspath(p)) != skip):
+                # 「仅校验」等任务会把输入 PMX 原样放进 made，绝不能改它
+                try:
+                    info = pmx_recenter.recenter_file(
+                        p, dst=p, inplace=True, backup=False,
+                        mode="ground", snap_root=True, log=self._logfn())
+                    off = tuple(round(x, 3) for x in info["offset"])
+                    self.q.put(("log", t("log_snap_origin",
+                                         name=os.path.basename(p),
+                                         off=off), "ok"))
+                except Exception as e:
+                    self.q.put(("log", t("log_snap_fail", err=e), "warn"))
+            out.append(p)
+        return out
+
+    def _convert_one_core(self, path, cfg):
+        """转换一个文件，返回 (产出的文件列表, 实际使用的输出目录)。
+
+        输出目录一并返回，是为了让附加产物（预览图）落在**同一个**目录里，
+        而不是各自再算一次 _out_folder() 又建出一个新目录。
+        """
         q = self.q
         kind = classify(path)
         task = cfg.get("task", "auto")
@@ -3149,57 +3370,66 @@ class ConverterApp:
         if not task:
             q.put(("log", "跳过不支持的文件：%s" % os.path.basename(path),
                    "warn"))
-            return []
+            return ([], None)
         folder = cfg["outdir"] or os.path.dirname(os.path.abspath(path)) or BASE
         # 输出目录可能还不存在（例如用户指定的 out/ 子目录），先建好再写文件
         try:
             os.makedirs(folder, exist_ok=True)
         except OSError as e:
             q.put(("log", "无法创建输出目录 %s：%s" % (folder, e), "err"))
-            return []
+            return ([], None)
 
         # 「输出到同名子文件夹」：每次转换单独一个 <文件名>_<日期>_<序号> 目录，
         # 重复转换不会互相覆盖（纯校验任务不建目录）。
         if cfg.get("subfolder", True) and task != "check":
             stem = os.path.splitext(os.path.basename(path))[0]
-            folder = self._out_folder(folder, stem)
+            sub = self._out_folder(folder, stem)
+            if not sub:
+                q.put(("log", t("log_no_outdir"), "err"))
+                return ([], None)
+            folder = sub
             q.put(("log", "输出目录：%s" % folder, "info"))
 
         if task == "check":
             q.put(("log", ""))
             q.put(("log", "→ %s（仅校验）" % os.path.basename(path), "head"))
             self._report(path, os.path.dirname(os.path.abspath(path)), cfg)
-            return [path]
+            return ([path], folder)
 
         if task == "vrm2pmx":
-            return self._do_vrm2pmx(path, folder, cfg)
+            return (self._do_vrm2pmx(path, folder, cfg), folder)
 
         if task == "pmx2vrm":
-            return self._do_pmx2vrm(path, folder, cfg)
+            return (self._do_pmx2vrm(path, folder, cfg), folder)
 
         if task == "uemodel2pmx":
-            return self._do_uemodel2pmx(path, folder, cfg)
+            return (self._do_uemodel2pmx(path, folder, cfg), folder)
 
         if task == "pmx2uemodel":
-            return self._do_pmx2uemodel(path, folder, cfg)
+            return (self._do_pmx2uemodel(path, folder, cfg), folder)
 
         if task == "psk2pmx":
-            return self._do_psk2pmx(path, folder, cfg)
+            return (self._do_psk2pmx(path, folder, cfg), folder)
 
         if task == "xps2pmx":
-            return self._do_xps2pmx(path, folder, cfg)
+            return (self._do_xps2pmx(path, folder, cfg), folder)
 
         if task == "pmx2fbx":
-            return self._do_pmx2fbx(path, folder, cfg)
+            return (self._do_pmx2fbx(path, folder, cfg), folder)
 
         if task == "pmx2psk":
-            return self._do_pmx2psk(path, folder, cfg)
+            return (self._do_pmx2psk(path, folder, cfg), folder)
 
-        return self._do_fbx2pmx(path, kind, folder, cfg)
+        return (self._do_fbx2pmx(path, kind, folder, cfg), folder)
 
     # -- 输出目录：同名子文件夹（文件名_日期_序号）--------------------------
     def _out_folder(self, base, stem):
-        """在 base 下建 <stem>_<YYYYMMDD>_<NNN> 并返回（重名就往后 +1）。
+        """在 base 下建 <stem>_<YYYYMMDD>_<NNN> 并返回；建不出来返回 None。
+
+        ⚠ 以前这里是 `except OSError: pass` 然后把目录名原样返回，后果是日志里
+        明明写着「输出目录：xxx_001」，紧接着写文件却报 FileNotFoundError ——
+        真正的错误（拒绝访问 / 被占用 / 被杀毒软件拦）被吞掉了，用户完全看不出
+        所以然。现在建不出来一律返回 None，由调用方明确报错。
 
         用户要求：重复转换同一文件时不要互相覆盖，每次都落到新编号的目录里。
         例：R2T1AimisiMd10011.pskx → R2T1AimisiMd10011_20260101_001
@@ -3209,12 +3439,26 @@ class ConverterApp:
         n = 1
         while n < 10000:
             d = os.path.join(base, "%s_%s_%03d" % (stem, day, n))
-            if not os.path.exists(d):
+            if os.path.exists(d):
+                n += 1
+                continue
+            err = None
+            for attempt in range(4):
                 try:
                     os.makedirs(d)
-                except OSError:
-                    pass
-                return d
+                    return d
+                except FileExistsError:
+                    err = None          # 别人刚建了同名目录，换下一个编号
+                    break
+                except OSError as e:
+                    # Windows 上刚删掉的目录会有一小段「删除挂起」期，这期间
+                    # CreateDirectory 也返回「拒绝访问」(WinError 5)，重试能过。
+                    err = e
+                    time.sleep(0.15 * (attempt + 1))
+            if err is not None:
+                self.q.put(("log", "创建输出目录失败：%s\n    %s"
+                            % (d, err), "err"))
+                return None
             n += 1
         return base
 
@@ -3601,6 +3845,82 @@ class ConverterApp:
         except Exception as e:
             q.put(("log", "预览渲染失败：%s" % e, "warn"))
 
+    # -- 附加产物：模型正面预览图（PNG）-------------------------------------
+    def _export_preview_img(self, src, mesh, folder, stem, cfg):
+        """把预览网格渲染成 <stem>_preview.png（正面）放进输出目录。
+
+        这是独立于转换的一步：失败只在日志里提示，不影响模型文件，也不进
+        made 列表。src 用于「转换后才有预览图」的情况——网格是从转换**输出**
+        文件重新读出来的（见 _after_convert_preview）。
+        """
+        if not cfg.get("export_preview"):
+            return []
+        q = self.q
+        if mesh is None:
+            try:
+                mesh = model_preview.load_preview(
+                    src, flip_z=bool(cfg.get("flip_z", True)),
+                    auto_facing=bool(cfg.get("auto_facing", True)),
+                    face_180=bool(cfg.get("face_180", False)))
+            except Exception as e:
+                q.put(("log", t("log_preview_fail", err=e), "warn"))
+                return []
+        if not mesh or not getattr(mesh, "verts", None):
+            q.put(("log", t("log_preview_fail", err="空网格"), "warn"))
+            return []
+        try:
+            size = int(str(cfg.get("preview_size") or "1024"))
+        except (TypeError, ValueError):
+            size = 1024
+        size = max(128, min(size, 4096))
+        out = os.path.join(folder, "%s_preview.png" % stem)
+        q.put(("log", "导出预览图…", "info"))
+        try:
+            # yaw=180 = 相机在模型正面（与 GUI 预览默认视角一致）。
+            # fit_auto=True：按**投影后的实际范围**取景，带横向长兵器 / 场景
+            # 道具的模型不再被那根横杆把人物挤小，整个模型都会铺满画面。
+            p = model_preview.render_to_png(
+                mesh, out, size=size, yaw=math.radians(180.0),
+                pitch=0.0, show_bones=False, fit_auto=True)
+        except Exception as e:
+            q.put(("log", t("log_preview_fail", err=e), "warn"))
+            return []
+        if not p:
+            q.put(("log", t("log_preview_fail", err="渲染返回空"), "warn"))
+            return []
+        q.put(("log", "   " + t("log_preview_export",
+                                name=os.path.basename(p), w=size, h=size),
+               "ok"))
+        return [p]
+
+    def _after_convert_preview(self, src, made, folder, cfg):
+        """转换结束后补一张预览图：从**输出**文件重读网格（转换后才有预览的场景）。
+
+        典型例子：FBX → PMX，源 FBX 没有贴图 / 读不出材质，转换后的 PMX 才有
+        完整外观；PMX → PMX 之外的输出（uemodel / psk / xps / fbx）也各自
+        有预览读取器。读不出来就退回源文件（render_to_png 侧会再兜底）。
+        """
+        if not cfg.get("export_preview"):
+            return []
+        srcs = [p for p in made
+                if os.path.isfile(p)
+                and model_preview.classify(p) != "unknown"]
+        if not srcs:
+            return []
+        stem = os.path.splitext(os.path.basename(src))[0]
+        mesh = None
+        for p in srcs:
+            try:
+                mesh = model_preview.load_preview(
+                    p, flip_z=bool(cfg.get("flip_z", True)),
+                    auto_facing=bool(cfg.get("auto_facing", True)),
+                    face_180=bool(cfg.get("face_180", False)))
+                break
+            except Exception:
+                mesh = None
+        return self._export_preview_img(srcs[0], mesh, folder, stem, cfg) or \
+            self._export_preview_img(src, None, folder, stem, cfg)
+
     # -- UI pump ------------------------------------------------------------
     def _pump(self):
         try:
@@ -3618,7 +3938,7 @@ class ConverterApp:
                 elif kind == "err":
                     self.log(msg[1], "err")
                 elif kind == "done":
-                    self._finish(msg[1], msg[2])
+                    self._finish(msg[1], msg[2], msg[3] if len(msg) > 3 else None)
                 elif kind == "update":
                     self._on_update_result(msg[1])
         except queue.Empty:
@@ -3710,7 +4030,7 @@ class ConverterApp:
         if getattr(self, "pv", None) is not None:
             self.pv.set_bones(bool(self.var_bones.get()))
 
-    def _finish(self, made, cfg):
+    def _finish(self, made, cfg, extra=None):
         self.busy = False
         self.btn_go.configure(state="normal", bg=ACCENT)
         self._progress(False)
@@ -3720,6 +4040,11 @@ class ConverterApp:
             self.log(t("log_done", n=len(made)), "head")
             for p in made:
                 self.log("   " + p, "ok")
+            if extra:
+                self.log("")
+                self.log(t("log_done", n=len(extra)), "head")
+                for p in extra:
+                    self.log("   " + p, "ok")
             self.status(t("status_done", n=len(made)))
             if cfg.get("open_after") and self.last_out_dir:
                 try:

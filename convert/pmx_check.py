@@ -493,6 +493,12 @@ def mmd_audit(m, path=None):
             ok.append("孤儿顶点 %d 个（占比 %.1f%%，可接受）" % (orphan, pct))
 
     if m["materials"] and m["faces"]:
+        # 顶点索引宽度由文件头 globals[2] 声明：1 字节 / 2 字节(16 位) / 4 字节。
+        # 只有 16 位（2）才怕 65535；32 位的 PMX 里索引上万、上十万都是合法的，
+        # 别把「大模型」误报成「MMD 会闪退」——实测 R2T1LiliMd10011.pmx 就是
+        # 32 位索引（68886 顶点），被误报过。
+        gl = m.get("globals") or []
+        vi_bytes = gl[2] if len(gl) > 2 else 2
         start = 0
         spans = []
         for mm in m["materials"]:
@@ -500,11 +506,16 @@ def mmd_audit(m, path=None):
             start += mm["faces"]
             if seg and max(seg) >= 65535:
                 spans.append((mm["name"], max(seg)))
-        if spans:
+        if spans and vi_bytes >= 4:
+            ok.append("材质引用的顶点索引最大 %d（≥65535，但文件头声明顶点索引是 "
+                      "32 位，MMD 认这种写法）"
+                      % max(x[1] for x in spans))
+        elif spans:
             bad.append("%d 个材质引用到的顶点索引 ≥ 65535（最大 %d，如「%s」）—— "
-                       "MMD 的 D3D9 渲染用 16 位索引缓冲，超限会直接闪退；"
-                       "多半是上面「孤儿顶点」那条的连带结果"
-                       % (len(spans), max(x[1] for x in spans), spans[0][0]))
+                       "文件头的顶点索引宽度是 %d 字节，MMD 的 D3D9 渲染走 16 位"
+                       "索引缓冲，超限会直接闪退；多半是上面「孤儿顶点」那条的连带结果"
+                       % (len(spans), max(x[1] for x in spans), spans[0][0],
+                          vi_bytes))
         else:
             ok.append("所有材质引用的顶点索引都 < 65535")
 
@@ -589,6 +600,78 @@ def mmd_audit(m, path=None):
             ok.append("刚体 / 关节的引用都在范围内")
     else:
         ok.append("没有刚体 / 关节（不会踩物理数据的坑）")
+
+    # --- 3c. 权重映射错位：索引都合法，但指到了不相干的骨骼上 ---------
+    # 「索引越界」查不出这一类。转换器若把骨骼表按 DFS 重排（保证父在子前），
+    # 却仍拿源骨骼下标写权重，PMXEditor 一样能开、MMD 载入也不报错，只有一拖
+    # 骨骼整片顶点才飞出去。判据：每根骨骼按权重求它影响的顶点重心，看离自己
+    # 多远；取中位数再跟模型高度比。正常绑定只有身高的几个百分点，整体错位
+    # 会到三成以上（实测 UE 那份：修复后 1.9%，错映射 31.6%）。
+    if nb >= 20 and nv >= 1000:
+        import math as _math
+        acc = {}
+        for vt in m["vertices"]:
+            bl, ws, wt = vt[4], vt[5], vt[3]
+            if wt == 0:
+                pairs = ((bl[0], 1.0),) if bl else ()
+            elif wt == 1:
+                w0 = ws[0] if ws else 1.0
+                pairs = ((bl[0], w0), (bl[1], 1.0 - w0)) if len(bl) > 1 else ()
+            else:
+                pairs = ((bl[k], ws[k] if k < len(ws) else 0.0)
+                         for k in range(min(4, len(bl))))
+            p = vt[0]
+            for bi, w in pairs:
+                if w <= 0.02 or not (0 <= bi < nb):
+                    continue
+                a = acc.setdefault(bi, [0.0, 0.0, 0.0, 0.0])
+                a[0] += p[0] * w
+                a[1] += p[1] * w
+                a[2] += p[2] * w
+                a[3] += w
+        if len(acc) >= max(8, nb // 4):
+            ys = [vt[0][1] for vt in m["vertices"]]
+            height = (max(ys) - min(ys)) or 1.0
+            ds = []
+            for bi, a in acc.items():
+                if a[3] < 0.5:
+                    continue
+                c = (a[0] / a[3], a[1] / a[3], a[2] / a[3])
+                q = m["bones"][bi]["pos"]
+                ds.append(_math.dist(c, q))
+            if ds:
+                ds.sort()
+                med = ds[len(ds) // 2]
+                pct = med / height
+                if pct > 0.15:
+                    bad.append("骨骼与受它影响的顶点整体对不上：重心距离中位 %.2f "
+                               "（身高 %.2f 的 %.0f%%）。索引没越界，所以 PE 能开、"
+                               "MMD 也不报载入错，但一动骨骼模型就散架。典型成因是"
+                               "骨骼表按 DFS 重排后，权重仍写的是重排前的源下标"
+                               % (med, height, pct * 100))
+                else:
+                    ok.append("权重映射与骨骼位置吻合（重心距离中位 %.2f，身高 %.0f%%）"
+                              % (med, pct * 100))
+
+    # --- 3d. 表示枠：Root / 表情 两个特殊枠必须都在 -------------------
+    # PMX 里 special=1 的枠就是 MMD 内置的「Root」和「表情」两个枠。少写「表情」
+    # 这一枠时，MMD 一载入就闪退（PMXEditor 却能正常打开，所以特别难查）。
+    # 实测所有 PMXEditor / Blender 导出的 PMX —— 连 0 顶点 0 表情的 EmptyFile.pmx
+    # —— 都老老实实写着这两枠，哪怕是空的。
+    frames = m.get("frames") or []
+    has_root = any(f.get("special") and f.get("name") == "Root" for f in frames)
+    has_face = any(f.get("special") and f.get("name") == "表情" for f in frames)
+    if has_root and has_face:
+        ok.append("表示枠含 Root / 表情 两个特殊枠")
+    else:
+        miss = []
+        if not has_root:
+            miss.append("Root")
+        if not has_face:
+            miss.append("表情")
+        bad.append("表示枠缺特殊枠 %s —— MMD 把 special=1 的枠当成内置的「Root」和"
+                   "「表情」，缺一个就可能载入时闪退（PMXEditor 反而能开）。"
+                   "空枠也要写出来" % " / ".join(miss))
 
     # --- 4. 名字里的坑 -------------------------------------------
     def bad_name(s):

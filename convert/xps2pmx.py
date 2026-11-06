@@ -668,11 +668,15 @@ def convert(path, out_path, scale_mode="mmd", log=None, name=None,
          else main_items).append(i)
     frames = []
     if main_items:
-        frames.append({"name": "Root", "name_en": "Root", "special": 0,
+        frames.append({"name": "Root", "name_en": "Root", "special": 1,
                        "items": [(0, i) for i in main_items]})
     if unused_items:
         frames.append({"name": "unused", "name_en": "unused", "special": 0,
                        "items": [(0, i) for i in unused_items]})
+    # 「表情」是 MMD 内置的另一个特殊枠，本转换器不产表情，但**空枠也必须写**：
+    # 少了它 MMD 载入时会闪退（PMXEditor 却能开）。
+    frames.append({"name": "表情", "name_en": "Exp", "special": 1,
+                   "items": []})
 
     stem = os.path.splitext(os.path.basename(path))[0]
     title = name or stem

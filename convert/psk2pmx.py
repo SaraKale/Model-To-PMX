@@ -661,13 +661,14 @@ def convert(path, out_path, scale_mode="mmd", log=None, name=None,
         _l("表情：%d 个（顶点表情）" % len(pmx_morphs))
 
     # ---- 表示枠 / 模型信息
-    frames = []
-    if pmx_bones:
-        frames.append({"name": "Root", "name_en": "Root", "special": 0,
-                       "items": [(0, i) for i in range(len(pmx_bones))]})
-    if pmx_morphs:
-        frames.append({"name": "表情", "name_en": "Exp", "special": 1,
-                       "items": [(1, i) for i in range(len(pmx_morphs))]})
+    # special=1 的两枠就是 MMD 内置的「Root」和「表情」，两个都必须写，空枠也要写：
+    # 少一个 MMD 载入时会闪退（PMXEditor 却能开）。
+    frames = [
+        {"name": "Root", "name_en": "Root", "special": 1,
+         "items": [(0, i) for i in range(len(pmx_bones))]},
+        {"name": "表情", "name_en": "Exp", "special": 1,
+         "items": [(1, i) for i in range(len(pmx_morphs))]},
+    ]
 
     stem = os.path.splitext(os.path.basename(path))[0]
     title = name or stem

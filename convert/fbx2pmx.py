@@ -53,6 +53,7 @@ import os
 import shutil
 import struct
 import sys
+import time
 
 # 让 `python convert/fbx2pmx.py ...` 也能直接跑：脚本自己所在目录（convert/）和同级的
 # formats/ 都要进 sys.path。以前这里只加了 convert/，于是 `import pmxio` 之类会
@@ -273,6 +274,20 @@ def m_dir(m, p):
 
 def m_translation(m):
     return (m[3], m[7], m[11])
+
+
+def m_bind_translation(mtx):
+    """从 Cluster 的 TransformLink 里取「骨骼在网格局部坐标里的绑定位置」。
+
+    FBX 的矩阵按**列主序**存（平移落在 12/13/14），但个别导出器会写成行主序
+    （平移在 3/7/11）。仿射矩阵的底行是 (0,0,0,1)，所以哪一组是 0 哪一组就是
+    底行，另一组才是平移 —— 两种写法都能认。
+    """
+    a = (mtx[3], mtx[7], mtx[11])
+    b = (mtx[12], mtx[13], mtx[14])
+    if sum(abs(v) for v in b) >= sum(abs(v) for v in a):
+        return b
+    return a
 
 
 def m_trs(t, rot_deg, s):
@@ -1596,10 +1611,20 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
     alpha_mode = alpha_mode_of(alpha_mode, remove_alpha)
     # 确保输出目录存在（CLI 直接调用时尤其容易漏建）
     _odir = os.path.dirname(os.path.abspath(out_path))
-    try:
-        os.makedirs(_odir, exist_ok=True)
-    except OSError as e:
-        raise OSError("无法创建输出目录 %s：%s" % (_odir, e))
+    _last = None
+    for _try in range(4):
+        try:
+            os.makedirs(_odir, exist_ok=True)
+            _last = None
+            break
+        except OSError as e:
+            # Windows：刚被删掉的目录有一段「删除挂起」期，这期间 CreateDirectory
+            # 也返回「拒绝访问」(WinError 5)，等一下重试通常就过了。
+            _last = e
+            time.sleep(0.15 * (_try + 1))
+    if _last is not None:
+        raise OSError("无法创建输出目录 %s：%s（常见原因：目录只读、被杀毒/安全"
+                      "软件拦截、被其它程序占用）" % (_odir, _last))
 
     # ---- gather meshes in a stable order
     geo_ids = [nid for nid, n in scene.byid.items()
@@ -1900,12 +1925,110 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
 
     pw = PmxWriter((vi_size, ti_size, mi_size, bi_size, 1, 1))
 
-    # ---- bone names / positions are taken in the SAME pmx space
-    bpos = {}
+    # ---- 骨骼位置：优先取「绑定姿势」，不是节点当前的姿势
+    #
+    # 很多游戏导出的 FBX 会把骨骼节点保存成**当前摆的姿势**，而网格顶点仍然是
+    # 绑定姿势；两者的髋骨能差几十厘米。以前直接拿 Model.world（当前姿势）当
+    # 骨骼位置写进 PMX，结果骨骼整体飘到网格外面：实测 Art_Avatar_019_00.fbx
+    # 手骨跑到胸口高度、背后 25cm，59/293 根骨骼落在网格包围盒之外，MMD 里一
+    # 套动作就散架。顶点→最近骨骼的中位距离：节点姿势 0.196 m，绑定姿势 0.034 m。
+    #
+    # 绑定姿势只能从 Cluster.TransformLink 里拿（它是「骨骼局部 → 网格局部」的
+    # 矩阵，平移那一列就是绑定时刻的骨骼位置）。
+    skin_geo = {}
+    for gid, sid in scene.geometry_skin.items():
+        skin_geo.setdefault(sid, gid)
+    # geo_w 之前只给「留下的网格」算过；被跳过的网格也要有，否则它上面那些
+    # cluster 拿不到网格世界矩阵，绑定位置会少一层变换。
+    for gid in geo_ids:
+        if gid not in geo_w:
+            mid = scene.geometry_model[gid]
+            mdl = scene.models[mid]
+            geo_w[gid] = m_mul(mdl.world,
+                               scene._geom_matrix(scene.byid.get(mid)))
+    bind_pos = {}               # bone_id -> 绑定姿势世界坐标（未缩放/未换轴）
+    for cid, sid in scene.cluster_skin.items():
+        bid = scene.cluster_bone.get(cid)
+        if bid is None or bid in bind_pos:
+            continue
+        cl = scene.byid.get(cid)
+        tl = cl.get("TransformLink") if cl is not None else None
+        if tl is None:
+            continue
+        mtx = tl.props[0]
+        if not isinstance(mtx, list) or len(mtx) != 16:
+            continue
+        t = m_bind_translation(mtx)
+        gid = skin_geo.get(sid)
+        w = geo_w.get(gid)
+        bind_pos[bid] = m_point(w, t) if w is not None else t
+
+    # 两套候选：①节点当前姿势 ②绑定姿势（缺 cluster 的骨骼借最近祖先的位移差）
+    node_raw = {}
     for m in bones:
         node = scene.byid.get(m.id)
         bw = m_mul(m.world, scene._geom_matrix(node) if node else m_ident())
-        bpos[m.id] = xf(m_translation(bw))
+        node_raw[m.id] = m_translation(bw)
+    node_pos = {k: xf(v) for k, v in node_raw.items()}
+
+    bind_use = {}
+    shift = []
+    for m in bones:
+        p = bind_pos.get(m.id)
+        if p is not None:
+            shift.append(abs(p[0] - node_raw[m.id][0])
+                         + abs(p[1] - node_raw[m.id][1])
+                         + abs(p[2] - node_raw[m.id][2]))
+        else:
+            # 没有 cluster 的骨骼（点/眼/舌/裙摆等辅助骨）拿不到绑定姿势，
+            # 借最近一个有绑定姿势的祖先的位移差把它一起挪过去，免得单独留在
+            # 当前姿势那个空间里（眼骨、Coat/Sleeve 这类都会明显偏）。
+            p = node_raw[m.id]
+            anc = m.parent
+            while anc is not None:
+                q = bind_pos.get(anc.id)
+                if q is not None:
+                    at = node_raw.get(anc.id) or m_translation(anc.world)
+                    p = (p[0] + q[0] - at[0], p[1] + q[1] - at[1],
+                         p[2] + q[2] - at[2])
+                    break
+                anc = anc.parent
+        bind_use[m.id] = xf(p)
+
+    # 选哪一套：按「骨骼落在网格包围盒内的比例」投票。绑定姿势通常明显更好，但
+    # 个别导出器的 TransformLink 单位/空间对不上（实测 Navia 那份差 219 源单位、
+    # 116/120 根骨骼被甩到网格外），这种就退回节点姿势 —— 宁可不动，不能更糟。
+    bpos = node_pos
+    if bind_use and pmx_verts:
+        xs = [p[0] for p, _, _, _ in pmx_verts]
+        ys = [p[1] for p, _, _, _ in pmx_verts]
+        zs = [p[2] for p, _, _, _ in pmx_verts]
+        lo = (min(xs), min(ys), min(zs))
+        hi = (max(xs), max(ys), max(zs))
+        pad = [(hi[i] - lo[i]) * 0.02 for i in range(3)]
+
+        def _inside(pos):
+            n = 0
+            for p in pos.values():
+                if all(lo[i] - pad[i] <= p[i] <= hi[i] + pad[i] for i in range(3)):
+                    n += 1
+            return n / float(len(pos) or 1)
+
+        r_node = _inside(node_pos)
+        r_bind = _inside(bind_use)
+        if r_bind >= r_node - 0.02:
+            bpos = bind_use
+        if verbose:
+            shift.sort()
+            med = shift[len(shift) // 2] if shift else 0.0
+            if bpos is bind_use and med > 1e-3:
+                print("  bones: %d/%d 按绑定姿势定位（节点当前姿势与绑定姿势中位差 "
+                      "%.3f，源单位；落在网格内 %.0f%% -> %.0f%%）"
+                      % (len(bind_pos), len(bones), med, r_node * 100, r_bind * 100))
+            elif bpos is not bind_use and med > 1e-3:
+                print("  bones: 绑定姿势与节点姿势差异 %.3f，但绑定姿势会让骨骼更"
+                      "跑偏（网格内 %.0f%% vs %.0f%%），沿用节点姿势"
+                      % (med, r_bind * 100, r_node * 100))
 
     # ---- optional centering / grounding (MMD convention: origin-centered, feet at y=0)
     if center and nv:
@@ -2122,14 +2245,30 @@ def convert(scene, out_path, scale_mode="mmd", flip_z=True, verbose=True, name=N
     else:
         pw.i32(0)
 
-    # display frames: one, listing every bone
-    pw.i32(1)
+    # ---- display frames（表示枠）：必须写「Root」和「表情」两个特殊枠
+    #
+    # ⚠ 以前这里只写一个 Root，结果 MMD 一载入就闪退（PMXEditor 却能开，所以很
+    # 难联想到）。原因：PMX 里 special=1 的枠就是 MMD 内置的「Root」和「表情」两
+    # 个枠，两个都得在 —— 少了「表情」这一枠，MMD 建表情面板时没有宿主，直接崩。
+    # 实测所有 PMXEditor / Blender 导出的 PMX（连 0 顶点 0 表情的 EmptyFile.pmx）
+    # 都老老实实写着这两枠。本工程其它转换器（vrm2pmx / psk2pmx / xps2pmx /
+    # uemodel2pmx）也都写了，只有这里漏了。
+    _n_frame_mo = written_morphs
+    if pw.moi == 1 and _n_frame_mo > 127:      # 1 字节有符号索引放不下更多
+        _n_frame_mo = 127
+    pw.i32(2)
     pw.text("Root"); pw.text("Root")
-    pw.buf += bytes([1])
+    pw.buf += bytes([1])                       # 特殊枠
     pw.i32(len(bones))
     for m in bones:
-        pw.buf += bytes([0])            # 要素対象 0 = ボーン
+        pw.buf += bytes([0])                   # 要素対象 0 = ボーン
         pw.idx(bone_index[m.id], bi_size)
+    pw.text("表情"); pw.text("Exp")
+    pw.buf += bytes([1])                       # 特殊枠
+    pw.i32(_n_frame_mo)
+    for mi_ in range(_n_frame_mo):
+        pw.buf += bytes([1])                   # 要素対象 1 = モーフ
+        pw.idx(mi_, pw.moi)
 
     # rigid bodies / joints
     pw.i32(0)

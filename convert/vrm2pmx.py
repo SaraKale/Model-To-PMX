@@ -119,7 +119,7 @@ def _m3_apply(m, n):
 # ---------------------------------------------------------------- 主流程 --
 def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
             reverse_winding="auto", name=None, log=None, tex_dir=None,
-            enable_edge=False, force_double_sided=False):
+            enable_edge=False, force_double_sided=False, center=True):
     """把 VRM / GLB 转成 PMX 2.0。
 
     reverse_winding:
@@ -677,6 +677,26 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
        % (len(pmx_verts), len(pmx_faces) // 3, len(pmx_materials),
           len(pmx_textures)))
 
+    # ---- 居中：x/z 取包围盒中心、y 脚底归零（其余转换器同口径）
+    # VRM/glTF 常给根节点挂整体平移，或模型本身就是「站在 z=+3」的展示姿势；
+    # 不居中的话 MMD 载入后模型离原点老远，摄像机与地面阴影都对不上。
+    # 必须**顶点和骨骼一起平移**：只挪顶点会让权重全部错位。
+    # 表情是相对位移增量（见下面 delta_lin），平移对它无影响，不用改。
+    # 骨骼的 tail 已在上面算成方向向量 / 子骨索引，平移也不影响。
+    if center and pmx_verts:
+        xs = [v["pos"][0] for v in pmx_verts]
+        ys = [v["pos"][1] for v in pmx_verts]
+        zs = [v["pos"][2] for v in pmx_verts]
+        off = (-(min(xs) + max(xs)) * 0.5, -min(ys),
+               -(min(zs) + max(zs)) * 0.5)
+        for v in pmx_verts:
+            p = v["pos"]
+            v["pos"] = (p[0] + off[0], p[1] + off[1], p[2] + off[2])
+        for b in pmx_bones:
+            p = b["pos"]
+            b["pos"] = (p[0] + off[0], p[1] + off[1], p[2] + off[2])
+        _l("居中：偏移 (%.3f, %.3f, %.3f)" % off, "info")
+
     # ---- 表情
     # 表情增量 → PMX 偏移 = 该 primitive 的顶点线性变换 + 换轴/缩放。
     # 缺了前一步，蒙皮顶点被绑定矩阵摆正过、增量却没摆正（UniGLTF 系 VRM 的
@@ -846,14 +866,16 @@ def convert(vrm_path, pmx_path, scale_mode="auto", rotate="auto",
         _l("表情：%d 个（已转成 PMX 顶点表情）" % len(pmx_morphs))
 
     # ---- 表示枠
-    frames = []
-    if pmx_bones:
-        # items: (0=骨骼, 1=表情)
-        frames.append({"name": "Root", "name_en": "Root", "special": 0,
-                       "items": [(0, i) for i in range(len(pmx_bones))]})
-    if pmx_morphs:
-        frames.append({"name": "表情", "name_en": "Exp", "special": 1,
-                       "items": [(1, i) for i in range(len(pmx_morphs))]})
+    # special=1 的两枠就是 MMD 内置的「Root」和「表情」，**两个都必须写出来**，
+    # 空枠也要写：少一个 MMD 载入时会闪退（PMXEditor 却能正常打开，特别难查）。
+    # 实测 PMXEditor / Blender 导出的 PMX 连 0 顶点 0 表情的 EmptyFile.pmx
+    # 都老老实实写着这两枠。
+    frames = [
+        {"name": "Root", "name_en": "Root", "special": 1,
+         "items": [(0, i) for i in range(len(pmx_bones))]},
+        {"name": "表情", "name_en": "Exp", "special": 1,
+         "items": [(1, i) for i in range(len(pmx_morphs))]},
+    ]
 
     # ---- 模型信息
     meta = (vrm1 or vrm0 or {}).get("meta") or {}
@@ -910,6 +932,8 @@ def main(argv=None):
                     help="给材质开启 MMD 轮廓线（默认关闭）")
     ap.add_argument("--force-double-sided", action="store_true",
                     help="所有材质强制双面（出现镂空时的兜底手段）")
+    ap.add_argument("--no-center", action="store_true",
+                    help="不重新居中/落地（保留 VRM 原始世界位置）")
     ap.add_argument("--name", default=None)
     a = ap.parse_args(argv)
     out = a.out or (os.path.splitext(a.vrm)[0] + ".pmx")
@@ -917,6 +941,7 @@ def main(argv=None):
                  reverse_winding=(True if a.flip_winding else "auto"),
                  name=a.name, enable_edge=a.edge,
                  force_double_sided=a.force_double_sided,
+                 center=not a.no_center,
                  log=lambda m, t=None: print(m))
     print("完成：%s（%.2f MB）" % (out, st["bytes"] / 1048576.0))
     return 0

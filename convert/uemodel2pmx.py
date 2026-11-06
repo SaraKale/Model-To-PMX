@@ -88,8 +88,11 @@ class _FolderIndex(object):
         try:
             for fn in os.listdir(folder):
                 self.map.setdefault(fn.lower(), fn)
-        except OSError:
-            pass
+        except OSError as e:
+            # 别静默吞：目录列不出来时贴图会「全部消失」，日志里只剩一句
+            # 「关联到贴图 0 个」，看不出是权限/占用导致的。
+            print("  warning: 无法列出目录 %s（%s）—— 贴图将无法解析"
+                  % (folder, e))
 
     def get(self, name):
         return self.map.get((name or "").lower())
@@ -763,10 +766,20 @@ def convert(path, out_path, scale_mode="fixed", lod_index=0, log=None,
         need_flip = bool(flip_winding)
 
     # ---- 顶点
+    # WEIGHTS 里的 bone 是**源骨骼表下标**（skeleton.bones），而 pmx_bones 上面
+    # 已经按 DFS 重排过（保证父在子前，PMXEditor 的骨顺表依赖这个）。两边必须
+    # 经 slot 映射，否则索引虽然都合法、却整片指到不相干的骨骼上：PMXEditor 能开、
+    # MMD 载入也不报错，但一拖骨骼模型就散架。实测 R2T1LiliMd10011：367 根里
+    # 359 根被重排，79.7% 的权重条目错位（LClavicle 指到了 Bone_Piao011_R）。
     per_vertex = {}
+    n_bad_bone = 0
     for w in lod.weights:
         if 0 <= w.vertex:
-            per_vertex.setdefault(w.vertex, []).append((w.bone, w.weight))
+            pmx_bi = slot.get(w.bone, -1)
+            if pmx_bi < 0:
+                n_bad_bone += 1
+                continue
+            per_vertex.setdefault(w.vertex, []).append((pmx_bi, w.weight))
 
     uv0 = lod.uvs[0].uvs if lod.uvs else []
     extra = []
@@ -967,13 +980,14 @@ def convert(path, out_path, scale_mode="fixed", lod_index=0, log=None,
     _l("表情：%d 个（顶点表情）" % len(pmx_morphs))
 
     # ---- 表示枠 / 模型信息
-    frames = []
-    if pmx_bones:
-        frames.append({"name": "Root", "name_en": "Root", "special": 0,
-                       "items": [(0, i) for i in range(len(pmx_bones))]})
-    if pmx_morphs:
-        frames.append({"name": "表情", "name_en": "Exp", "special": 1,
-                       "items": [(1, i) for i in range(len(pmx_morphs))]})
+    # special=1 的两个内置枠（Root / 表情）必须**无条件都写**，没有表情也要写空枠。
+    # 少写「表情」时 MMD 建表情面板找不到宿主枠会直接闪退（PMXEditor 却能开）。
+    frames = [
+        {"name": "Root", "name_en": "Root", "special": 1,
+         "items": [(0, i) for i in range(len(pmx_bones))]},
+        {"name": "表情", "name_en": "Exp", "special": 1,
+         "items": [(1, i) for i in range(len(pmx_morphs))]},
+    ]
 
     stem = os.path.splitext(os.path.basename(path))[0]
     title = name or m.name or stem
@@ -1005,6 +1019,9 @@ def convert(path, out_path, scale_mode="fixed", lod_index=0, log=None,
     if n_weights_dropped:
         _l("提示：%d 条第 5 及以后的骨骼权重被丢弃（PMX 最多 4 根）"
            % n_weights_dropped, "info")
+    if n_bad_bone:
+        _l("提示：%d 条权重引用了源骨骼表里不存在的索引，已忽略"
+           % n_bad_bone, "warn")
 
     # height = **输出 PMX 里**的真实高度（源高度 × scale），不是源高度本身：
     # 之前写成 hi_y-lo_y，mmd 模式下会误报成源高度，容易让人以为缩放没生效。

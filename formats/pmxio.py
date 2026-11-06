@@ -641,11 +641,16 @@ def write_pmx(model, path):
                 w.idx(off[0], moi)
                 w.f32(off[1])
             elif kind == 10:
+                # インパルス：read_pmx 存的是
+                #   (刚体Index, 局部标志u8, 移动速度vec3, 旋转扭矩vec3)
+                # 以前这里按 (idx, vec3, vec3) 写，会把 u8 当 vec3 展开、
+                # 少写 1 字节并打乱后面所有数据 —— 含冲量表情的 PMX 回写即损坏。
                 w.idx(off[0], ri)
-                for k in range(3):
-                    w.f32(off[1][k])
+                w.u8(off[1])
                 for k in range(3):
                     w.f32(off[2][k])
+                for k in range(3):
+                    w.f32(off[3][k])
 
     frames = m.get("frames") or []
     w.i32(len(frames))
@@ -711,6 +716,11 @@ def write_pmx(model, path):
     if m.get("version", 2.0) > 2.05:
         w.i32(0)
 
+    # 输出目录不存在时先建好：调用方（GUI 的 _out_folder）一旦没建成目录，
+    # 这里至少给出一句看得懂的错，而不是光秃秃的 FileNotFoundError。
+    _dir = os.path.dirname(os.path.abspath(path))
+    if _dir:
+        os.makedirs(_dir, exist_ok=True)
     with open(path, "wb") as f:
         f.write(w.buf)
     return len(w.buf)
