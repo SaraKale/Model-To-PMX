@@ -84,7 +84,7 @@ except Exception:                                   # pragma: no cover
 # 版本号的唯一来源：界面显示、检查更新、Windows exe 的版本资源都从这里取。
 # 发版时把 tag 打成 v<__version__>（例如 v1.1.6），「检查更新」就是拿 tag 来比大小。
 # 当前值 = 已发布的最新 tag；下次发版前记得把它 +1。
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 # 「工具」页签（对已有 PMX 单独做原点对齐）暂时不显示。
 # 功能代码、i18n 文案和 _recenter_existing() 全部保留；以后想恢复，
@@ -276,6 +276,7 @@ LANG = {
         "scale_auto": "自动",
         "scale_raw": "原始尺寸",
         "scale_custom": "自定义",
+        "scale_factor": "自定义倍率",
         "opt_flipz": "Z 轴翻转（FBX 右手系 → MMD）",
         "opt_bones": "预览叠加骨骼点",
         "opt_open": "完成后打开输出目录",
@@ -471,6 +472,7 @@ LANG = {
         "scale_auto": "自動",
         "scale_raw": "原始尺寸",
         "scale_custom": "自訂",
+        "scale_factor": "自訂倍率",
         "opt_flipz": "Z 軸翻轉（FBX 右手系 → MMD）",
         "opt_bones": "預覽疊加骨骼點",
         "opt_open": "完成後開啟輸出目錄",
@@ -666,6 +668,7 @@ LANG = {
         "scale_auto": "Auto",
         "scale_raw": "Original size",
         "scale_custom": "Custom",
+        "scale_factor": "Custom factor",
         "opt_flipz": "Flip Z axis (FBX right-handed → MMD)",
         "opt_bones": "Overlay bones in preview",
         "opt_open": "Open output folder when done",
@@ -861,6 +864,7 @@ LANG = {
         "scale_auto": "自動",
         "scale_raw": "元のサイズ",
         "scale_custom": "カスタム",
+        "scale_factor": "カスタム倍率",
         "opt_flipz": "Z 軸反転（FBX 右手系 → MMD）",
         "opt_bones": "プレビューにボーン点を重ねる",
         "opt_open": "完了後に出力フォルダを開く",
@@ -1482,6 +1486,75 @@ class BigCheck(tk.Frame):
             super().configure(**rest)
 
 
+class BigRadio(tk.Frame):
+    """比原生 Radiobutton 更大的单选项：大圆点 + 整块可点击区域。
+
+    同组共用**一个** StringVar，每个按钮带自己的 value。点谁就把变量设成谁，
+    其余按钮由变量回调自动熄灭。原生 Radiobutton 若各绑一个 BooleanVar 就互不
+    联动，会出现「几个都亮着、点哪个都取消不掉」的情况。
+    """
+
+    def __init__(self, master, text="", variable=None, value="", command=None,
+                 font=None, fg=TXT, bg=CARD, **kw):
+        super().__init__(master, bg=bg, highlightthickness=1,
+                         highlightbackground=BORDER, **kw)
+        self.var = variable if variable is not None else tk.StringVar()
+        self.value = value
+        self.command = command
+        self._size = px(22)
+        self._box = tk.Canvas(self, width=self._size, height=self._size,
+                              bg=bg, highlightthickness=0, bd=0,
+                              cursor="hand2")
+        self._box.pack(side="left", padx=(px(9), px(7)), pady=px(6))
+        self._lbl = tk.Label(self, text=text, bg=bg, fg=fg,
+                             font=font or F_BODY, cursor="hand2")
+        self._lbl.pack(side="left", padx=(0, px(10)), pady=px(6))
+        # 圆点、文字、整块空白都能点中，点击区域比原生单选框大得多。
+        for w in (self, self._box, self._lbl):
+            w.bind("<Button-1>", self._select)
+        self._trace_id = self.var.trace_add("write", lambda *_a: self._draw())
+        # 切语言 / 改界面缩放会 _rebuild()，销毁时把回调摘掉，免得越积越多。
+        self.bind("<Destroy>", self._on_destroy, add="+")
+        self._draw()
+
+    def _on_destroy(self, _event=None):
+        if getattr(self, "_trace_id", None):
+            try:
+                self.var.trace_remove("write", self._trace_id)
+            except Exception:
+                pass
+            self._trace_id = None
+
+    def _select(self, _event=None):
+        self.var.set(self.value)
+        self._draw()
+        if callable(self.command):
+            self.command()
+
+    def _draw(self):
+        # _rebuild() 会销毁整棵控件树，但挂在共享变量上的回调还在；
+        # 旧实例收到通知时直接跳过，免得对已销毁的控件报 TclError。
+        if not self.winfo_exists():
+            return
+        on = (self.var.get() == self.value)
+        bg = ACCENT_SOFT if on else CARD
+        edge = ACCENT if on else BORDER
+        try:
+            self.configure(bg=bg, highlightbackground=edge)
+            self._box.configure(bg=bg)
+            self._lbl.configure(bg=bg)
+        except tk.TclError:
+            return
+        c, s = self._box, self._size
+        c.delete("all")
+        c.create_oval(2, 2, s - 2, s - 2,
+                      outline=(ACCENT if on else "#9aa3b0"),
+                      width=max(1, px(2)), fill=bg)
+        if on:
+            c.create_oval(s * 0.29, s * 0.29, s * 0.71, s * 0.71,
+                          fill=ACCENT, outline=ACCENT)
+
+
 class ConverterApp:
     def __init__(self, root):
         self.root = root
@@ -1498,9 +1571,9 @@ class ConverterApp:
         self._img = None
         self._drag_hot = False
 
-        self.var_scale_auto = tk.BooleanVar(value=True)
-        self.var_scale_raw = tk.BooleanVar(value=False)
-        self.var_scale_custom = tk.BooleanVar(value=False)
+        # 缩放三选一共用**一个**变量才能真正互斥；以前各绑一个 BooleanVar，
+        # 点谁来都只把自己的变量设成 True，其余不会熄灭（看着像取消不掉）。
+        self.var_scale_mode = tk.StringVar(value="auto")
         self.var_scale_value = tk.StringVar(value="1.0")
         self.var_flipz = tk.BooleanVar(value=True)
         self.var_bones = tk.BooleanVar(value=False)
@@ -1774,21 +1847,26 @@ class ConverterApp:
         row1.pack(fill="x", padx=px(14), pady=(px(8), 0))
         tk.Label(row1, text=t("scale"), font=F_BOLD, bg=CARD, fg=TXT,
                  width=8, anchor="w").pack(side="left")
-        for text, var in ((t("scale_auto"), self.var_scale_auto),
-                          (t("scale_raw"), self.var_scale_raw),
-                          (t("scale_custom"), self.var_scale_custom)):
-            rb = tk.Radiobutton(row1, text=text, variable=var, value=True,
-                                bg=CARD, fg=TXT, font=F_BODY,
-                                activebackground=CARD, activeforeground=TXT,
-                                selectcolor=CARD, highlightthickness=0, bd=0,
-                                command=self._pick_scale)
-            rb.pack(side="left", padx=(0, px(14)))
-        self.ent_scale = tk.Entry(row1, textvariable=self.var_scale_value,
+        # 三个选项共享 var_scale_mode，点谁谁亮、其余自动熄灭。
+        # 自定义倍率的输入框单独放一行：按钮做大之后和输入框挤一行会
+        # 在窄窗口里把输入框裁掉。
+        for text, mode in ((t("scale_auto"), "auto"),
+                           (t("scale_raw"), "raw"),
+                           (t("scale_custom"), "custom")):
+            rb = BigRadio(row1, text=text, variable=self.var_scale_mode,
+                          value=mode, command=self._pick_scale)
+            rb.pack(side="left", padx=(0, px(8)))
+
+        row1b = tk.Frame(tab_g, bg=CARD)
+        row1b.pack(fill="x", padx=px(14), pady=(px(6), 0))
+        tk.Label(row1b, text=t("scale_factor"), font=F_BODY, bg=CARD,
+                 fg=MUTED).pack(side="left", padx=(0, px(8)))
+        self.ent_scale = tk.Entry(row1b, textvariable=self.var_scale_value,
                                   width=8, font=F_BODY, bg=CARD, fg=TXT,
                                   relief="solid", bd=1, justify="center",
                                   disabledbackground="#f0f2f6",
                                   highlightthickness=0, insertbackground=TXT)
-        self.ent_scale.pack(side="left", padx=(px(8), 0))
+        self.ent_scale.pack(side="left")
 
         self._bigcheck(tab_g, t("opt_flipz"), self.var_flipz)
         self._bigcheck(tab_g, t("opt_bones"), self.var_bones,
@@ -2461,9 +2539,9 @@ class ConverterApp:
             self.var_outdir.set(s.get("outdir", "") or "")
             self.var_scale_value.set(str(s.get("scale_value", "1.0")))
             mode = s.get("scale_mode", "auto")
-            self.var_scale_auto.set(mode == "auto")
-            self.var_scale_raw.set(mode == "raw")
-            self.var_scale_custom.set(mode == "custom")
+            # 旧配置可能存了别的值，坏值一律回退到「自动」
+            self.var_scale_mode.set(mode if mode in ("auto", "raw", "custom")
+                                    else "auto")
             self.zoom = norm_zoom(s.get("ui_zoom"))
             self.var_zoom.set(zoom_label(self.zoom))
             try:
@@ -2534,8 +2612,7 @@ class ConverterApp:
 
     def _save_settings(self):
         try:
-            mode = ("auto" if self.var_scale_auto.get() else
-                    "raw" if self.var_scale_raw.get() else "custom")
+            mode = self.var_scale_mode.get()
             try:
                 self._save_split()
             except Exception:
@@ -2632,7 +2709,7 @@ class ConverterApp:
 
     # ---------------------------------------------------------- ui handlers --
     def _pick_scale(self):
-        custom = self.var_scale_custom.get()
+        custom = (self.var_scale_mode.get() == "custom")
         self.ent_scale.configure(state="normal" if custom else "disabled",
                                  fg=TXT if custom else FAINT)
 
@@ -3194,15 +3271,16 @@ class ConverterApp:
         #（按身高归一到 20 单位），uemodel 走 "fixed"（UE cm→MMD 1/8 固定比例，
         # 部件才能保持相对大小）。这里统一发 "auto"，由各转换器自己解释，
         # 免得 GUI 端硬写死成 mmd 把 uemodel 的默认覆盖掉。
-        if self.var_scale_auto.get():
-            scale = "auto"
-        elif self.var_scale_raw.get():
+        mode = self.var_scale_mode.get()
+        if mode == "raw":
             scale = 1.0
-        else:
+        elif mode == "custom":
             try:
                 scale = float(self.var_scale_value.get().strip())
             except ValueError:
                 scale = "auto"
+        else:
+            scale = "auto"
         return {
             "scale": scale,
             "flip_z": bool(self.var_flipz.get()),

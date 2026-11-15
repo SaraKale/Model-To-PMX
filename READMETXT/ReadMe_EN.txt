@@ -112,6 +112,7 @@ https://x.com/SaraKale9
 
 Update history:
 
+2026-11-15 v1.2.1：Fixed the issue with the zoom options button.
 2026-11-06 v1.2.0: Fixed Windows long path issues and resolved certain conversion problems when exporting from FBX/uemodel to PMX files.
 2026-10-15 v1.1.9: The output options now include a “Export Model Preview Image Simultaneously” setting.
 2026-10-14 v1.1.8:Fixed some issues with Unity package conversions, and added an option in the FBX settings to preserve meshes without materials.
