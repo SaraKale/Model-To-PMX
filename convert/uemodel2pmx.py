@@ -1041,7 +1041,7 @@ def convert(path, out_path, scale_mode="fixed", lod_index=0, log=None,
                 fbx_path, pmx_verts, pmx_faces, pmx_materials,
                 pmx_bones, pmx_morphs,
                 mirror_z=True, reverse_winding=True, tex_dir=tex_dir,
-                log=_l, name=title)
+                log=_l, name=title, scale=fbxout.fit_scale(pmx_verts))
             _l("已写出 %s（ASCII FBX 7.4 · %.2f MB）"
                % (os.path.basename(fbx_path),
                   st["fbx"]["bytes"] / 1048576.0), "ok")

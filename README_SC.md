@@ -101,7 +101,8 @@ Model-to-PMX/
 │   ├── pmx2psk.py               #   PMX → psk / pskx（Unreal ActorX）
 │   ├── psk2pmx.py               #   PSK / PSKX（Unreal ActorX）→ PMX
 │   ├── xps2pmx.py               #   XPS / XNALara → PMX
-│   └── pmx_check.py             #   PMX 校验 + 软件渲染预览图
+│   ├── pmx_check.py             #   PMX 校验 + 软件渲染预览图
+│   └── pmx_recenter.py          #   把已有 PMX 对齐到世界原点
 │
 ├── gfx/
 │   └── preview.py               # 实时 3D 正面预览控件
@@ -215,7 +216,9 @@ python convert/xps2pmx.py "model.xps" -o "model.pmx" --show-unused --one-sided
 python convert/xps2pmx.py "model.xps" -o "model.pmx" --fbx
 
 # PMX → FBX（ASCII 7.4，含骨骼/权重/表情/贴图引用）
+# 默认 --scale auto：按身高归一到 160cm；keep = 1:1 保持 MMD 单位（约 20cm 高）
 python convert/fbxout.py "model.pmx" -o "model.fbx"
+python convert/fbxout.py "model.pmx" -o "model.fbx" --scale keep
 
 # PMX → pskx（默认 pskx，含法线/附加 UV/表情；默认目标身高 160cm）
 python convert/pmx2psk.py "model.pmx" -o "model.pskx"
@@ -226,6 +229,11 @@ python convert/pmx2psk.py "model.pmx" -o "model.psk" --std
 # PMX 校验 + 生成预览图
 python convert/pmx_check.py "model.pmx"
 python convert/pmx_check.py "model.pmx" --bones   # 叠加骨骼位置
+
+# 把已经导出的 PMX 对齐到世界原点（不需要源模型、不需要重转）
+python convert/pmx_recenter.py "model.pmx"                 # 同目录生成 model_centered.pmx
+python convert/pmx_recenter.py "model.pmx" --mode origin  # 包围盒中心严格落在 (0,0,0)
+python convert/pmx_recenter.py "model.pmx" --inplace      # 原地修，自动留 .bak 备份
 
 # 把 PMX 的文本编码改成 MMD 能读的 UTF-16LE（旧文件修复用）
 python formats/pmxio.py "model.pmx"               # 输出 model_utf16.pmx
@@ -397,6 +405,18 @@ Release 默认是**草稿（draft）**状态——请到 Releases 页面确认�
 1. **路径含空格 / 中文**：命令行调用时一律加双引号。
 2. **设置文件 `config.json`**：记录语言、界面缩放、任务方向、各选项等，删除后会以默认值重建。
 3. **快捷键与交互**：预览区可拖动旋转、滚轮缩放；拖放区点击可打开文件选择框。
+
+### 模型 / 骨骼整体偏离世界原点
+
+转换时默认会把 PMX 对齐到世界原点（顶点 X/Z 居中、脚底 Y=0，并把根骨钉在
+`(0,0,0)`），通用页的「输出的 PMX 强制对齐世界原点（含根骨）」可以关掉。
+手上那份**已经导出**的旧 PMX 不用重转：命令行跑
+`python convert/pmx_recenter.py "model.pmx"`，同目录会多出 `model_centered.pmx`，
+贴图相对路径仍然有效，原文件不动。
+
+注意两点：MMD 里原点在**两脚之间**，镜头放大到只看一只靴子时，那只脚本来就不在
+轴上，这是正常的；另外模型位置也可能被 MMD 的「全ての親」骨骼或已保存的
+`.pmm` 移动过，那种偏移改 PMX 是修不了的，需要在 MMD 里把模型位置归零。
 
 ### 报错 `FileNotFoundError: [Errno 2]`（路径太长）
 

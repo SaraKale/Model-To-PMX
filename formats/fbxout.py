@@ -123,10 +123,21 @@ def _weights_of(vertex):
     return out or [(0, 1.0)]
 
 
+def fit_scale(verts, height=160.0):
+    """按顶点 Y 范围算出「归一到 height cm」的缩放系数。
+
+    FBX 的 UnitScaleFactor=1 是厘米制，而 PMX 常规身高只有 20 单位，
+    1:1 写出去就是 20cm 的小人。所有把 PMX 数据写成 FBX 的路径都应该先过这里。
+    """
+    ys = [v["pos"][1] for v in verts if v.get("pos")]
+    h = (max(ys) - min(ys)) if ys else 0.0
+    return (float(height) / h) if h > 1e-6 else 1.0
+
+
 def export_model(path, verts, faces, materials, bones, morphs=None,
                  mirror_z=True, reverse_winding=True, tex_dir=None, log=None,
                  creator="ueformat2pmx", name=None, model_name="model",
-                 flip_v=True):
+                 flip_v=True, scale=1.0):
     """写出 ASCII FBX。
 
     verts      : PMX 顶点 dict 列表（pos/normal/uv/wtype/wbones/wweights）
@@ -139,17 +150,28 @@ def export_model(path, verts, faces, materials, bones, morphs=None,
                  骨骼/UV/材质表情 FBX 装不下，跳过。
     model_name : 网格节点名（默认 "model"，传模型名更友好）
     flip_v     : 是否把 UV 的 V 轴翻过来（**默认必须翻**，见下面注释）
+    scale      : 位置统一缩放（顶点 / 骨骼 / 表情增量一起乘）。FBX 的
+                 UnitScaleFactor=1 表示 1 单位 = 1cm，而 MMD 的常规身高只有
+                 20 单位，1:1 写出去在 Blender / UE 里就是 20cm 高的小人，
+                 所以 PMX 侧由 export_pmx 按目标身高换算后传进来。
+                 **法线不能乘**（方向向量，乘了会被放大 8 倍）。
     返回统计 dict。
     """
     _l = log or _log_default
-    sx = 1.0
-    sz = -1.0 if mirror_z else 1.0
+    # 变量名别用 k：下面写表情的循环 `for k, (mo, pairs) in ...` 会把 k 覆盖成
+    # 表情序号，xf() 里的缩放系数就悄悄变成 0（表情增量全写 0，网格却正常）。
+    sc = float(scale)
+    sx = sc
+    sz = (-1.0 if mirror_z else 1.0) * sc
+    # 法线只做镜像、不缩放：长度必须保持 1
+    nx = 1.0
+    nz = -1.0 if mirror_z else 1.0
     if name:
         model_name = name
     model_name = _san(model_name)
 
     def xf(p):
-        return (p[0] * sx, p[1], p[2] * sz)
+        return (p[0] * sx, p[1] * sc, p[2] * sz)
 
     nv = len(verts)
     ntris = len(faces) // 3
@@ -326,7 +348,7 @@ def export_model(path, verts, faces, materials, bones, morphs=None,
     for tri in tris:
         for vi in tri:
             n = verts[vi]["normal"] if vi < nv else (0.0, 1.0, 0.0)
-            buf.append("%s,%s,%s" % (_f(n[0] * sx), _f(n[1]), _f(n[2] * sz)))
+            buf.append("%s,%s,%s" % (_f(n[0] * nx), _f(n[1]), _f(n[2] * nz)))
     _arr(w, "\t\t\t\t", buf)
     w("\t\t\t} ")
     w("\t\t}")
@@ -653,10 +675,35 @@ def export_model(path, verts, faces, materials, bones, morphs=None,
     return st
 
 
-def export_pmx(pmx_path, fbx_path, log=None, mirror_z=True):
-    """直接读 PMX 再写 FBX（命令行用）。"""
+def export_pmx(pmx_path, fbx_path, log=None, mirror_z=True,
+               scale_mode="auto", height=160.0, scale=None):
+    """直接读 PMX 再写 FBX（命令行用）。
+
+    scale_mode : "auto"（默认）按身高归一到 height cm；"keep"/"raw"/1 保持
+                 PMX 原始单位（20 单位 = 20cm，导入后很小，这是 1:1 的本来
+                 面貌）；其它值按浮点数当缩放系数。
+    scale      : 直接给缩放系数时覆盖 scale_mode。
+    """
     import pmxio
+    _l = log or _log_default
     m = pmxio.read_pmx(pmx_path)
+    if scale is None:
+        ys = [v["pos"][1] for v in m["vertices"]]
+        h_pmx = (max(ys) - min(ys)) if ys else 0.0
+        if scale_mode in ("auto", "mmd", "fbx", None):
+            scale = (float(height) / h_pmx) if h_pmx > 1e-6 else 1.0
+        elif scale_mode in ("keep", "none", "off", "raw", 1, 1.0):
+            scale = 1.0
+        else:
+            scale = float(scale_mode)
+        _l("缩放：PMX 高 %.3f 单位 × %.6f → %.2f cm（FBX 单位=cm）"
+           % (h_pmx, scale, h_pmx * scale))
+        # 1:1 保持 MMD 单位时，20 单位在厘米制 FBX 里就是 20cm 的小人。
+        # 这不是算错，是「原始尺寸」本来的面貌，但用户很容易误判成 bug，
+        # 所以明确提示一句该选哪个。
+        if scale == 1.0 and 1e-6 < h_pmx < 60.0:
+            _l("提示：「原始尺寸」按 MMD 单位 1:1 写出，导入后约 %.0fcm 高；"
+               "要正常人体大小请把缩放改成「自动」" % h_pmx, "warn")
     tex_dir = os.path.join(os.path.dirname(os.path.abspath(pmx_path)), "textures")
     for mt in m["materials"]:
         ti = mt.get("tex", -1)
@@ -667,7 +714,8 @@ def export_pmx(pmx_path, fbx_path, log=None, mirror_z=True):
     return export_model(fbx_path, m["vertices"], m["faces"], m["materials"],
                         m["bones"], m["morphs"], mirror_z=mirror_z,
                         reverse_winding=True, tex_dir=tex_dir, log=log,
-                        creator="fbxout.py", model_name=model_name)
+                        creator="fbxout.py", model_name=model_name,
+                        scale=scale)
 
 
 def main(argv=None):
@@ -676,10 +724,17 @@ def main(argv=None):
     ap.add_argument("-o", "--out", default=None)
     ap.add_argument("--no-mirror", action="store_true",
                     help="不取反 Z（默认取反，与工程 FBX 读取路径互逆）")
+    ap.add_argument("--scale", default="auto",
+                    help="auto（按身高归一）/ keep（1:1，MMD 原始单位）/ 数字倍率")
+    ap.add_argument("--height", type=float, default=160.0,
+                    help="auto 时归一到多少 cm（默认 160）")
     a = ap.parse_args(argv)
     out = a.out or (os.path.splitext(a.src)[0] + ".fbx")
+    sc = a.scale.strip().lower()
+    scale_mode = sc if sc in ("auto", "keep", "raw", "none", "off") else float(sc)
     st = export_pmx(a.src, out, log=lambda m_, t=None: print(m_),
-                    mirror_z=not a.no_mirror)
+                    mirror_z=not a.no_mirror, scale_mode=scale_mode,
+                    height=a.height)
     print("完成：%s（%.2f MB）" % (out, st["bytes"] / 1048576.0))
     return 0
 

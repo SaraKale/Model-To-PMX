@@ -84,7 +84,7 @@ except Exception:                                   # pragma: no cover
 # 版本号的唯一来源：界面显示、检查更新、Windows exe 的版本资源都从这里取。
 # 发版时把 tag 打成 v<__version__>（例如 v1.1.6），「检查更新」就是拿 tag 来比大小。
 # 当前值 = 已发布的最新 tag；下次发版前记得把它 +1。
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 
 # 「工具」页签（对已有 PMX 单独做原点对齐）暂时不显示。
 # 功能代码、i18n 文案和 _recenter_existing() 全部保留；以后想恢复，
@@ -334,7 +334,7 @@ LANG = {
         "log_staged_tip": "确认下方选项后，点击「开始转换」按钮才会真正转换。",
         "log_staged_drop": "已就绪的文件与当前任务方向不匹配，已清空，请重新拖入。",
         "log_title": "转换日志",
-        "preview_title": "模型预览（正面实时预览 · 可拖动旋转 / 滚轮缩放）",
+        "preview_title": "模型预览 · 可拖动旋转",
         "preview_stats": "拖入任意格式的模型即可实时预览（默认正面）",
         "pv_front": "正视",
         "pv_left": "左视",
@@ -530,7 +530,7 @@ LANG = {
         "log_staged_tip": "確認下方選項後，點擊「開始轉換」按鈕才會真正轉換。",
         "log_staged_drop": "已就緒的檔案與目前任務方向不符，已清空，請重新拖入。",
         "log_title": "轉換日誌",
-        "preview_title": "模型預覽（正面即時預覽 · 可拖曳旋轉 / 滾輪縮放）",
+        "preview_title": "模型預覽 · 可拖曳旋轉",
         "preview_stats": "拖入任意格式的模型即可即時預覽（預設正面）",
         "pv_front": "正視",
         "pv_left": "左視",
@@ -726,7 +726,7 @@ LANG = {
         "log_staged_tip": "Review the options below, then click \"Start conversion\" to run.",
         "log_staged_drop": "Loaded files no longer match the current task direction; cleared. Please drop them again.",
         "log_title": "Conversion log",
-        "preview_title": "Model preview (live front view · drag to rotate / wheel to zoom)",
+        "preview_title": "Model preview · drag to rotate",
         "preview_stats": "Drop any model format to see a live preview (front view by default)",
         "pv_front": "Front",
         "pv_left": "Left",
@@ -922,7 +922,7 @@ LANG = {
         "log_staged_tip": "下のオプションを確認し、「変換開始」ボタンで変換を実行します。",
         "log_staged_drop": "読み込み済みのファイルが現在のタスク方向と一致しないため、クリアしました。もう一度ドロップしてください。",
         "log_title": "変換ログ",
-        "preview_title": "モデルプレビュー（正面 リアルタイム・ドラッグで回転／ホイールで拡大）",
+        "preview_title": "モデルプレビュー · ドラッグで回転",
         "preview_stats": "任意の形式のモデルをドロップすると即時プレビュー（既定は正面）",
         "pv_front": "正面",
         "pv_left": "左面",
@@ -1625,7 +1625,7 @@ class ConverterApp:
         self.zoom = None                      # None = 跟随系统 DPI
         self.dnd_ok = None
         self._split = 0.60                    # 左右分栏比例（预览占右侧 40%）
-        self._vsplit = None                   # 左栏上下比例（None = 按内容自动）
+        self._log_frac = None                 # 右栏分割条位置（None = 日志约 190px）
 
         self._load_settings()
         self._build()
@@ -1685,7 +1685,7 @@ class ConverterApp:
                  anchor="w").pack(side="left", fill="x", expand=True)
 
         # ---- 主体：左右分栏（Blender 那种可以拖动分割条的排版）
-        # 左栏 = 拖放 + 选项 + 按钮 + 日志；右栏 = 整条高度的模型预览。
+        # 左栏 = 拖放 + 文件列表 + 选项 + 按钮；右栏 = 模型预览 + 日志。
         # 分割条位置会记进 config.json，下次打开还在原来的地方。
         self.panes = tk.PanedWindow(outer, orient="horizontal", bg="#d3dae4",
                                     bd=0, sashwidth=px(10), sashrelief="flat",
@@ -1699,23 +1699,28 @@ class ConverterApp:
         self.panes.add(right, minsize=px(300), stretch="always", width=px(420))
         self._restore_split()
 
-        # ---- 左栏再横切一刀：上段 = 拖放区 / 文件列表 / 选项 / 按钮，下段 = 日志
-        # 为什么必须再切：200% 缩放下上段的自然高度（拖放区 150 + 文件列表 324
-        # + 选项 558 + 按钮行 89 = 1121px）已经接近整窗可用的 1216px，日志再想
-        # 分一杯羹就只能把选项页裁掉。放进 PanedWindow 后上段能保住自己的高度，
-        # 日志拿剩下的，用户还能拖这条横向分割条自己分配（比例记进 config.json）。
-        self.vpanes = tk.PanedWindow(leftwrap, orient="vertical", bg="#d3dae4",
+        # ---- 左栏整列都归选项：日志挪走之后，选项页不用再和日志抢高度。
+        # 以前日志在左栏底部，200% 缩放下上段本身就要 1121px，稍微小一点的
+        # 窗口就得滚动才能看全选项。
+        top = tk.Frame(leftwrap, bg=BG)
+        top.pack(fill="both", expand=True)
+
+        # ---- 右栏再横切一刀：上段 = 模型预览，下段 = 日志
+        # 日志放右边的好处：① 左栏拿回整列高度；② 日志宽度跟着预览走，
+        # 比原来左栏那条窄带好读；③ 用户还能拖分割条自己分配
+        # （比例记进 config.json 的 log_frac）。
+        self.vpanes = tk.PanedWindow(right, orient="vertical", bg="#d3dae4",
                                      bd=0, sashwidth=px(10), sashrelief="flat",
                                      sashpad=0, handlesize=px(6),
                                      opaqueresize=True)
         self.vpanes.pack(fill="both", expand=True)
-        top = tk.Frame(self.vpanes, bg=BG)
-        self.vpanes.add(top, minsize=px(300), stretch="always")
-        left = tk.Frame(self.vpanes, bg=BG)          # 下半段：日志
-        self.vpanes.add(left, minsize=px(58), stretch="always")
+        pvwrap = tk.Frame(self.vpanes, bg=BG)        # 上段：模型预览
+        self.vpanes.add(pvwrap, minsize=px(220), stretch="always")
+        logwrap = tk.Frame(self.vpanes, bg=BG)       # 下段：日志
+        self.vpanes.add(logwrap, minsize=px(88), stretch="always")
 
-        # ---- 日志（放在下半段）
-        logbox = tk.Frame(left, bg=CARD, highlightthickness=1,
+        # ---- 日志（右栏底部）
+        logbox = tk.Frame(logwrap, bg=CARD, highlightthickness=1,
                           highlightbackground=BORDER)
         logbox.pack(fill="both", expand=True)
         lhead = tk.Frame(logbox, bg=CARD)
@@ -1728,8 +1733,9 @@ class ConverterApp:
         self.lbl_status = tk.Label(lhead, text=t("status_wait"), font=F_SMALL,
                                    bg=CARD, fg=MUTED)
         self.lbl_status.pack(side="right")
+        # 日志栏变窄（右栏宽度）后 wrap="none" 会把长行截掉，改成按词折行
         self.txt = tk.Text(logbox, font=F_LOG, bg=CARD, fg=TXT, relief="flat",
-                           wrap="none", height=6, highlightthickness=0,
+                           wrap="word", height=5, highlightthickness=0,
                            padx=px(10), pady=px(8), insertbackground=TXT)
         sb = tk.Scrollbar(logbox, command=self.txt.yview, relief="flat",
                           bd=0, width=px(14))
@@ -2065,8 +2071,8 @@ class ConverterApp:
                        lambda e: lbl_rt.configure(
                            wraplength=max(px(150), e.width - px(28))))
 
-        # ---- 右栏：模型预览（整列高度，跟 Blender 的 3D 视图区一个位置）
-        pvcard = self._card(right, t("preview_title"))
+        # ---- 右栏上段：模型预览（跟 Blender 的 3D 视图区一个位置）
+        pvcard = self._card(pvwrap, t("preview_title"))
         pvcard.pack(fill="both", expand=True)
         pvbox = tk.Frame(pvcard, bg=CARD,
                          highlightthickness=1, highlightbackground=BORDER)
@@ -2136,13 +2142,12 @@ class ConverterApp:
         except Exception:
             pass
 
-    # --------------------------------------------------- 左栏上下分割条 --
+    # --------------------------------------------------- 右栏上下分割条 --
     def _restore_vsplit(self):
-        """恢复（或首次计算）左栏上下分割条的位置。
+        """恢复（或首次计算）右栏「预览 / 日志」分割条的位置。
 
-        默认策略：上段（拖放区 + 文件列表 + 选项 + 按钮）先拿到它需要的高度，
-        日志分剩下的（≥ 110px）。200% 缩放下上段本身就要 1121px，靠这条分割条
-        才能保住选项页不被裁掉；用户拖过之后就按用户的比例来（存 config.json）。
+        默认策略：日志先拿约 190px，其余全给预览（人物是竖向的，预览越高越好）。
+        用户拖过之后就按用户的比例来（存 config.json 的 log_frac）。
         """
         try:
             total = self.vpanes.winfo_height()
@@ -2158,17 +2163,13 @@ class ConverterApp:
             total = total or self.vpanes.winfo_height()
             if total <= 1:
                 return
-            frac = getattr(self, "_vsplit", None)     # 用户拖过 → 用用户的比例
+            frac = getattr(self, "_log_frac", None)   # 用户拖过 → 用用户的比例
             if frac:
                 y = int(total * frac)
             else:
-                need = sum(w.winfo_reqheight() for w in
-                           (self.dz, self.nb, self.btn_go.master))
-                if getattr(self, "_files_shown", False):
-                    need += self.filecard.winfo_reqheight()
-                need += px(70)        # 各块之间的间距 + 分割条自身
-                y = min(need, total - px(58))
-            y = max(px(150), min(y, total - px(58)))
+                y = total - px(190)                   # 日志先拿约 190px
+            # 预览至少 220、日志至少 88（与两条 pane 的 minsize 对齐）
+            y = max(px(220), min(y, total - px(88)))
             self.vpanes.sash_place(0, 0, y)
         except Exception:
             pass
@@ -2178,15 +2179,21 @@ class ConverterApp:
             total = self.vpanes.winfo_height()
             _x, y = self.vpanes.sash_coord(0)
             if total > 1 and y > 0:
-                self._vsplit = min(0.92, max(0.15, y / float(total)))
+                self._log_frac = min(0.88, max(0.20, y / float(total)))
         except Exception:
             pass
 
     def _card(self, parent, title):
         box = tk.Frame(parent, bg=CARD, highlightthickness=1,
                        highlightbackground=BORDER)
-        tk.Label(box, text=title, font=F_BOLD, bg=CARD, fg=TXT,
-                 anchor="w").pack(fill="x", padx=px(10), pady=(px(8), px(4)))
+        lbl = tk.Label(box, text=title, font=F_BOLD, bg=CARD, fg=TXT,
+                       anchor="w", justify="left")
+        lbl.pack(fill="x", padx=px(10), pady=(px(8), px(4)))
+        # 标题跟着卡片宽度折行：右栏变窄后长标题会被直接截断（英文的
+        # "Model preview (live front view …)" 以前就溢出到卡片外面）
+        box.bind("<Configure>",
+                 lambda e: lbl.configure(
+                     wraplength=max(px(80), e.width - px(20))), add="+")
         return box
 
     def _btn(self, parent, text, cmd, kind="ghost", padx=None, pady=None):
@@ -2551,9 +2558,11 @@ class ConverterApp:
             except Exception:
                 pass
             try:
-                vs = s.get("vsplit")
-                if vs is not None and 0.15 < float(vs) < 0.95:
-                    self._vsplit = float(vs)
+                # log_frac = 右栏分割条位置（日志占比）。旧版的 vsplit 是
+                # 「左栏上下」的比例，语义不同，直接忽略、按新默认排。
+                lf = s.get("log_frac")
+                if lf is not None and 0.2 < float(lf) < 0.88:
+                    self._log_frac = float(lf)
             except Exception:
                 pass
             self.var_vrm_spec.set(s.get("vrm_spec", "1.0"))
@@ -2666,7 +2675,7 @@ class ConverterApp:
                            "export_preview": bool(self.var_export_preview.get()),
                            "preview_size": self.var_preview_size.get(),
                            "split": getattr(self, "_split", 0.6),
-                           "vsplit": getattr(self, "_vsplit", None)},
+                           "log_frac": getattr(self, "_log_frac", None)},
                           f, ensure_ascii=False, indent=2)
         except Exception:
             pass
@@ -3141,10 +3150,7 @@ class ConverterApp:
             self._files_shown = False
         self._set_dz_compact(bool(n))
         self._draw_dropzone()
-        # 文件列表一出一进，上段需要的高度差 200 多像素，自动重排一次
-        # （用户自己拖过分割条就不动了，尊重用户的选择）
-        if not getattr(self, "_vsplit", None):
-            self._place_vsplit()
+        # 文件列表一出一进只影响左栏，右栏的「预览 / 日志」分割条不用动。
 
     def remove_selected_files(self):
         """移除列表里选中的文件（Ctrl / Shift 可多选）。"""
@@ -3548,7 +3554,11 @@ class ConverterApp:
         q.put(("log", ""))
         q.put(("log", "→ %s" % os.path.basename(path), "head"))
         q.put(("log", "读取 PMX…", "info"))
-        st = fbxout.export_pmx(path, out, log=self._logfn())
+        # 缩放必须传下去：fbxout 的 UnitScaleFactor=1（1 单位=1cm），
+        # MMD 常规身高 20 单位 1:1 写出去就是 20cm 的小人，
+        # 「自动」按身高归一到 160cm 才是 FBX 世界里正常的大小。
+        st = fbxout.export_pmx(path, out, log=self._logfn(),
+                               scale_mode=cfg.get("scale", "auto"))
         q.put(("log", "已写出 %s（%s）"
                % (os.path.basename(out), human(st["bytes"])), "ok"))
         # 预览用源 PMX 渲染（FBX 没有渲染器）

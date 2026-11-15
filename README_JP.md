@@ -99,7 +99,8 @@ Model-to-PMX/
 │   ├── pmx2psk.py               #   PMX → psk / pskx（Unreal ActorX）
 │   ├── psk2pmx.py               #   PSK / PSKX（Unreal ActorX）→ PMX
 │   ├── xps2pmx.py               #   XPS / XNALara → PMX
-│   └── pmx_check.py             #   PMX 検証 + ソフトウェア描画のプレビュー画像
+│   ├── pmx_check.py             #   PMX 検証 + ソフトウェア描画のプレビュー画像
+│   └── pmx_recenter.py          #   既存 PMX をワールド原点へ整列
 │
 ├── gfx/
 │   └── preview.py               # リアルタイム 3D 正面プレビュー部品
@@ -225,7 +226,9 @@ python convert/xps2pmx.py "model.xps" -o "model.pmx" --show-unused --one-sided
 python convert/xps2pmx.py "model.xps" -o "model.pmx" --fbx
 
 # PMX → FBX（ASCII 7.4、ボーン/ウェイト/BlendShape/相対テクスチャパス）
+# 既定の --scale auto は身長を 160cm に正規化。keep = 1:1 で MMD の元単位（約 20cm）
 python convert/fbxout.py "model.pmx" -o "model.fbx"
+python convert/fbxout.py "model.pmx" -o "model.fbx" --scale keep
 
 # PMX → pskx（既定 pskx、法線/追加 UV/表情付き；既定目標身長 160cm）
 python convert/pmx2psk.py "model.pmx" -o "model.pskx"
@@ -236,6 +239,11 @@ python convert/pmx2psk.py "model.pmx" -o "model.psk" --std
 # PMX 検証 + プレビュー画像生成
 python convert/pmx_check.py "model.pmx"
 python convert/pmx_check.py "model.pmx" --bones   # ボーン位置を重ねる
+
+# 書き出し済み PMX をワールド原点へ整列（元モデル不要、再変換不要）
+python convert/pmx_recenter.py "model.pmx"                 # 同じフォルダに model_centered.pmx
+python convert/pmx_recenter.py "model.pmx" --mode origin  # バウンディングボックス中心を厳密に (0,0,0) へ
+python convert/pmx_recenter.py "model.pmx" --inplace      # 上書き（.bak を自動作成）
 
 # PMX のテキストエンコードを MMD が読める UTF-16LE に変更（旧ファイルの修復用）
 python formats/pmxio.py "model.pmx"               # model_utf16.pmx を出力
@@ -393,6 +401,20 @@ Release は**ドラフト**として作成されます——Releases ページ�
 1. **スペース / 日本語を含むパス**：コマンドライン呼び出し時は必ず二重引用符で囲む。
 2. **設定ファイル `config.json`**：言語・UI 拡縮・タスク方向・各オプションなどを記録。削除すると既定値で再作成される。
 3. **ショートカットと操作**：プレビュー欄はドラッグで回転、ホイールで拡縮。ドロップ領域をクリックでファイル選択ダイアログを開く。
+
+### モデル / ボーンがワールド原点からずれている
+
+変換時は既定で PMX をワールド原点に整列します（頂点の X/Z を中央揃え、足元を
+Y=0 に接地、ルート骨を `(0,0,0)` に固定）。「共通」タブの「出力 PMX を
+ワールド原点に強制整列（ルート骨を含む）」で無効にできます。
+**書き出し済み**の古い PMX は再変換不要です：
+`python convert/pmx_recenter.py "model.pmx"` で、同じフォルダに
+`model_centered.pmx` が生成されます（テクスチャの相対パスはそのまま、元ファイルは無変更）。
+
+2 点注意：MMD の原点は**両足の間**にあります。ブーツ 1 足だけにズームすると
+その足が軸上にないのは正常です。また「全ての親」ボーンや保存済み `.pmm` で
+モデル位置が動いている場合、そのオフセットは PMX には記録されないため、
+MMD 側でモデル位置をゼロに戻す必要があります。
 
 ### エラー `FileNotFoundError: [Errno 2]`（パスが長すぎる）
 

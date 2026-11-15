@@ -100,7 +100,8 @@ Model-to-PMX/
 │   ├── pmx2psk.py               #   PMX → psk / pskx (Unreal ActorX)
 │   ├── psk2pmx.py               #   PSK / PSKX (Unreal ActorX) → PMX
 │   ├── xps2pmx.py               #   XPS / XNALara → PMX
-│   └── pmx_check.py             #   PMX validation + software-rendered preview image
+│   ├── pmx_check.py             #   PMX validation + software-rendered preview image
+│   └── pmx_recenter.py          #   align an existing PMX to the world origin
 │
 ├── gfx/
 │   └── preview.py               # Real-time 3D front-view preview widget
@@ -219,7 +220,9 @@ python convert/xps2pmx.py "model.xps" -o "model.pmx" --show-unused --one-sided
 python convert/xps2pmx.py "model.xps" -o "model.pmx" --fbx
 
 # PMX → FBX (ASCII 7.4, with bones/weights/BlendShapes/relative texture paths)
+# default --scale auto normalises the height to 160cm; keep = 1:1 MMD units (~20cm tall)
 python convert/fbxout.py "model.pmx" -o "model.fbx"
+python convert/fbxout.py "model.pmx" -o "model.fbx" --scale keep
 
 # PMX → pskx (default pskx, with normals/extra UVs/morphs; default target height 160 cm)
 python convert/pmx2psk.py "model.pmx" -o "model.pskx"
@@ -230,6 +233,11 @@ python convert/pmx2psk.py "model.pmx" -o "model.psk" --std
 # PMX validation + generate preview image
 python convert/pmx_check.py "model.pmx"
 python convert/pmx_check.py "model.pmx" --bones   # overlay bone positions
+
+# Align an already exported PMX to the world origin (no source model, no re-conversion)
+python convert/pmx_recenter.py "model.pmx"                 # writes model_centered.pmx
+python convert/pmx_recenter.py "model.pmx" --mode origin  # put the bbox centre exactly at (0,0,0)
+python convert/pmx_recenter.py "model.pmx" --inplace      # patch in place, keeps a .bak backup
 
 # Change a PMX's text encoding to UTF-16LE (fix for files from older builds)
 python formats/pmxio.py "model.pmx"               # writes model_utf16.pmx
@@ -388,6 +396,21 @@ tag in the `release_tag` field to (re)upload the artifacts to that Release.
 1. **Paths with spaces / non-ASCII**: Always wrap them in double quotes on the command line.
 2. **Settings file `config.json`**: Stores language, UI zoom, task direction, and each option; it is recreated with defaults if deleted.
 3. **Shortcuts & interaction**: The preview area supports drag-to-rotate and scroll-to-zoom; clicking the drop area opens a file picker.
+
+### Model / bones appear offset from the world origin
+
+Conversions align the output PMX to the world origin by default (vertices centred
+on X/Z, feet grounded at Y=0, root bone pinned to `(0,0,0)`). You can turn this
+off with "Force output PMX to the world origin (incl. root bone)" on the General
+tab. An **already exported** PMX needs no re-conversion: run
+`python convert/pmx_recenter.py "model.pmx"`. A `model_centered.pmx` is written
+next to the original (so relative texture paths still work); the original is
+untouched.
+
+Two caveats: in MMD the origin sits **between the two feet** - when the camera is
+zoomed in on a single boot, that boot is naturally off-axis. A model can also be
+moved via the "all parent" bone or a saved `.pmm`; that offset is not stored in
+the PMX and must be reset inside MMD.
 
 ### Error `FileNotFoundError: [Errno 2]` (path too long)
 
